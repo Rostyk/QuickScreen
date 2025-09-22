@@ -9,7 +9,7 @@ macOS App → [QUIC] → Rust Server → [WebTransport/WebSocket] → Web Browse
 ```
 
 - **macOS Client**: Xcode app that captures screen, compresses to H.264, sends via QUIC
-- **Rust Server**: Receives QUIC streams, broadcasts via WebTransport (binary) + WebSocket (JSON)
+- **Rust Server**: Receives QUIC streams, broadcasts via WebTransport (QUIC binary) or WebSocket (TCP JSON)
 - **Web Player**: Receives frames, decodes with WebCodecs, renders to canvas
 
 ## 🚀 Quick Start
