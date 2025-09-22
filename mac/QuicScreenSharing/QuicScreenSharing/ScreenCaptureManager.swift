@@ -53,11 +53,28 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         let cfg = SCStreamConfiguration()
         cfg.capturesAudio = false
         cfg.pixelFormat = kCVPixelFormatType_32BGRA
-        // Target 30 fps for smooth streaming
-        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-        // Optionally match the display size. If you prefer to downscale, set width/height smaller.
-        cfg.width  = display.width
-        cfg.height = display.height
+        // Target 15 fps for stable real-time streaming (more time for encoding)
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30) // 30 FPS for smooth video
+        
+        // Scale to 720p - good balance of quality and performance
+        let targetWidth = 1280
+        let targetHeight = 720
+        let aspectRatio = Double(display.width) / Double(display.height)
+        
+        if aspectRatio > (Double(targetWidth) / Double(targetHeight)) {
+            cfg.width = targetWidth
+            cfg.height = Int(Double(targetWidth) / aspectRatio)
+        } else {
+            cfg.width = Int(Double(targetHeight) * aspectRatio)
+            cfg.height = targetHeight
+        }
+        
+        // Ensure even dimensions for H.264
+        cfg.width = (cfg.width / 2) * 2
+        cfg.height = (cfg.height / 2) * 2
+        
+        print("📏 Scaled resolution: \(display.width)x\(display.height) → \(cfg.width)x\(cfg.height) (optimized for encoding)")
+        
         // If you want to capture the cursor:
         cfg.showsCursor = true
 
@@ -108,7 +125,7 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
             return
         }
 
-        // Hand off the frame for QUIC transport
+        // Hand off the frame for QUIC transport directly (VideoToolbox is already async)
         let timestamp = CACurrentMediaTime()
         //print("📹 [\(String(format: "%.3f", timestamp))] Captured frame: \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))")
         quicTransport.sendFrame(pixelBuffer)

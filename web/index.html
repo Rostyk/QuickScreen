@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QUIC Video Stream - WebCodecs v2.0</title>
+    <title>QUIC Video Stream - WebCodecs v3.0 - BIGGER PLAYER</title>
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
@@ -11,31 +11,44 @@
         body {
             font-family: Arial, sans-serif;
             margin: 0;
-            padding: 20px;
+            padding: 10px;
             background: #1a1a1a;
             color: white;
         }
         .container {
-            max-width: 1200px;
+            max-width: 100%;
             margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .main-content {
+            width: 100%;
+        }
+        .stats-header {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 10px;
         }
         h1 {
             text-align: center;
             color: #4CAF50;
+            margin: 10px 0;
+            font-size: 24px;
         }
         .controls {
             text-align: center;
-            margin: 20px 0;
+            margin: 15px 0;
         }
         button {
             background: #4CAF50;
             color: white;
             border: none;
-            padding: 10px 20px;
-            margin: 0 10px;
+            padding: 8px 16px;
+            margin: 0 5px;
             border-radius: 5px;
             cursor: pointer;
-            font-size: 16px;
+            font-size: 14px;
         }
         button:hover {
             background: #45a049;
@@ -46,19 +59,27 @@
         }
         .video-container {
             text-align: center;
-            margin: 20px 0;
-        }
-        video {
-            max-width: 100%;
-            height: auto;
+            margin: 10px 0;
+            background: #000;
             border: 2px solid #4CAF50;
             border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+        }
+        #view {
+            max-width: 100%;
+            max-height: 600px;
+            width: auto;
+            height: auto;
+            display: block;
+            margin: 0 auto;
         }
         .status {
             text-align: center;
-            margin: 20px 0;
-            padding: 10px;
+            margin: 10px 0;
+            padding: 8px;
             border-radius: 5px;
+            font-size: 14px;
         }
         .status.connected {
             background: #2d5a2d;
@@ -70,67 +91,91 @@
         }
         .stats {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 20px 0;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin: 15px 0;
         }
         .stat-card {
-            background: #2a2a2a;
-            padding: 15px;
-            border-radius: 10px;
+            background: #333;
+            padding: 10px;
+            border-radius: 8px;
             text-align: center;
         }
         .stat-value {
-            font-size: 24px;
+            font-size: 18px;
             font-weight: bold;
             color: #4CAF50;
         }
         .stat-label {
-            font-size: 14px;
+            font-size: 11px;
             color: #ccc;
+        }
+        .decoder-info {
+            margin-top: 15px;
+            padding: 10px;
+            background: #333;
+            border-radius: 8px;
+        }
+        .decoder-info h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #4CAF50;
+        }
+        .decoder-info p {
+            margin: 0;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        @media (max-width: 768px) {
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎥 QUIC Video Stream via WebTransport</h1>
-        
-        <div class="controls">
-            <button id="connectBtn">Connect via WebSocket 📡</button>
-            <button id="connectWtBtn">Connect via WebTransport 🚀</button>
-            <button id="disconnectBtn" disabled>Disconnect</button>
-        </div>
-
-        <div id="status" class="status disconnected">
-            ❌ Disconnected
-        </div>
-
-        <div class="video-container">
-            <canvas id="view" width="1920" height="1080" style="background:#000; width: 100%; max-width: 1200px; height: auto;"></canvas>
-    <div style="background: #ccffcc; padding: 10px; margin: 10px 0; border-radius: 5px; border: 1px solid #00cc00;">
-        <strong>🎥 Pure WebCodecs H.264 Decoder:</strong><br>
-        ✅ Receiving H.264 stream via WebSocket<br>
-        🔧 Direct WebCodecs with proper avcC configuration<br>
-        💡 <strong>Hardware-accelerated browser playback!</strong>
-    </div>
-        </div>
-
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-value" id="framesReceived">0</div>
-                <div class="stat-label">Frames Received</div>
+        <div class="main-content">
+            <h1>🎥 QUIC Video Stream</h1>
+            
+            <div class="controls">
+                <button id="connectBtn">Connect via WebSocket 📡</button>
+                <button id="connectWtBtn">Connect via WebTransport 🚀</button>
+                <button id="disconnectBtn" disabled>Disconnect</button>
             </div>
-            <div class="stat-card">
-                <div class="stat-value" id="bytesReceived">0</div>
-                <div class="stat-label">Bytes Received</div>
+
+            <div id="status" class="status disconnected">
+                ❌ Disconnected
             </div>
-            <div class="stat-card">
-                <div class="stat-value" id="fps">0</div>
-                <div class="stat-label">FPS</div>
+
+            <div class="stats-header">
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="framesReceived">0</div>
+                        <div class="stat-label">Frames</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="bytesReceived">0</div>
+                        <div class="stat-label">Data</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="fps">0</div>
+                        <div class="stat-label">FPS</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="bitrate">0</div>
+                        <div class="stat-label">Bitrate</div>
+                    </div>
+                </div>
+                
+                <div class="decoder-info">
+                    <h3>🧠 WebCodecs H.264</h3>
+                    <p><strong>Hardware Acceleration:</strong> Direct H.264 decoding with GPU support. <strong>Zero Dependencies:</strong> Pure browser-native decoding. <strong>QUIC/WebSocket:</strong> Ultra-low latency transport. <strong>Real-time:</strong> Frame-by-frame processing.</p>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-value" id="bitrate">0</div>
-                <div class="stat-label">Bitrate (kbps)</div>
+
+            <div class="video-container">
+                <canvas id="view" width="1920" height="1080"></canvas>
             </div>
         </div>
     </div>
@@ -164,6 +209,41 @@
         
         const canvas = document.getElementById('view');
         const ctx = canvas.getContext('2d', { desynchronized: true });
+        
+        // Function to resize canvas to maintain aspect ratio
+        function resizeCanvas(videoWidth, videoHeight) {
+            const container = canvas.parentElement;
+            const containerWidth = container.clientWidth - 4; // Account for border
+            const maxHeight = 600; // Fixed max height for consistent player size
+            
+            // Calculate aspect ratio
+            const aspectRatio = videoWidth / videoHeight;
+            
+            let newWidth = containerWidth;
+            let newHeight = containerWidth / aspectRatio;
+            
+            // If height exceeds max, scale down
+            if (newHeight > maxHeight) {
+                newHeight = maxHeight;
+                newWidth = maxHeight * aspectRatio;
+            }
+            
+            // Ensure minimum size
+            if (newHeight < 300) {
+                newHeight = 300;
+                newWidth = 300 * aspectRatio;
+            }
+            
+            // Set canvas display size (CSS)
+            canvas.style.width = newWidth + 'px';
+            canvas.style.height = newHeight + 'px';
+            
+            // Set canvas internal resolution to match video
+            canvas.width = videoWidth;
+            canvas.height = videoHeight;
+            
+            console.log(`📐 Canvas resized: ${newWidth}x${newHeight} display, ${videoWidth}x${videoHeight} internal`);
+        }
 
         // --- WebCodecs with proper avcC handling ---
         let decoder;
@@ -211,19 +291,26 @@
                 console.warn('⚠️ Unexpected lengthSize:', lengthSizeMinusOne + 1, '(expected 4)');
             }
             
-            // Force software decoding to rule out hardware decoder issues
-            let config = { codec, description: avccData, hardwareAcceleration: 'prefer-software' };
+            // Try hardware acceleration first, fallback to software
+            let config = { codec, description: avccData, hardwareAcceleration: 'prefer-hardware' };
             let testSupport;
             
             try {
                 testSupport = await VideoDecoder.isConfigSupported(config);
                 
                 if (!testSupport.supported) {
-                    console.error('❌ Software codec not supported:', codec);
-                    return false;
+                    console.warn('⚠️ Hardware acceleration not supported, trying software...');
+                    config = { codec, description: avccData, hardwareAcceleration: 'prefer-software' };
+                    testSupport = await VideoDecoder.isConfigSupported(config);
+                    
+                    if (!testSupport.supported) {
+                        console.error('❌ Neither hardware nor software codec supported:', codec);
+                        return false;
+                    }
+                    console.log('✅ Codec supported:', codec, 'with SOFTWARE decoding (fallback)');
+                } else {
+                    console.log('✅ Codec supported:', codec, 'with HARDWARE decoding');
                 }
-                
-                console.log('✅ Codec supported:', codec, 'with SOFTWARE decoding (forced)');
             } catch (e) {
                 console.error('❌ Codec support test failed:', e);
                 return false;
@@ -232,12 +319,21 @@
             // Create decoder
             decoder = new VideoDecoder({
                 output: (frame) => {
-                    try {
-                        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-                        console.log('🎬 Frame rendered:', frame.codedWidth + 'x' + frame.codedHeight);
-                    } finally {
-                        frame.close();
-                    }
+                    // Use requestAnimationFrame for smooth rendering
+                    requestAnimationFrame(() => {
+                        try {
+                            // Resize canvas if video dimensions changed
+                            if (canvas.width !== frame.codedWidth || canvas.height !== frame.codedHeight) {
+                                resizeCanvas(frame.codedWidth, frame.codedHeight);
+                            }
+                            
+                            // Draw frame at full resolution
+                            ctx.drawImage(frame, 0, 0, frame.codedWidth, frame.codedHeight);
+                            console.log('🎬 Frame rendered:', frame.codedWidth + 'x' + frame.codedHeight);
+                        } finally {
+                            frame.close();
+                        }
+                    });
                 },
                 error: (e) => {
                     console.error('❌ Decoder error:', e.name, e.message);
@@ -373,8 +469,8 @@
                 }
             }
             
-            // Use simple sequential timestamps to avoid timing issues
-            const timestampUs = frameCount * 33333; // 30fps = 33.333ms intervals
+            // Use dynamic timestamps based on actual frame arrival time
+            const timestampUs = Math.round((performance.now() - t0) * 1000);
             frameCount++;
             
             try {
@@ -419,6 +515,9 @@
             document.getElementById('connectWtBtn').addEventListener('click', connectWebTransport);
             document.getElementById('disconnectBtn').addEventListener('click', disconnect);
         });
+        
+        // Initial canvas sizing - set a good default size
+        resizeCanvas(1920, 1080); // Default to common screen capture resolution
 
         function updateStatus(message, className) {
             const statusElement = document.getElementById('status');

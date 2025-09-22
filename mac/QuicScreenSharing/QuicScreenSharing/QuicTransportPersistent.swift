@@ -13,6 +13,8 @@ final class QuicTransportPersistent {
     // Video compression
     private var compressionSession: VTCompressionSession?
     private var frameCounter: UInt64 = 0
+    private var lastFrameTime: CFTimeInterval = 0
+    private var droppedFrameCount: Int = 0
     
     // Frame sending queue
     private let sendingQueue = DispatchQueue(label: "quic.sending", qos: .userInitiated)
@@ -217,24 +219,14 @@ final class QuicTransportPersistent {
             return
         }
         
-        // High-performance VideoToolbox settings for 30fps streaming
+        // Ultra-minimal settings - let VideoToolbox decide keyframes naturally
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse) // No B-frames
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 3_000_000 as CFNumber) // Higher bitrate
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 30 as CFNumber) // Keyframe every second
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber) // Explicit 30fps
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 300 as CFNumber) // Very rare keyframes - 10 seconds
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 300_000 as CFNumber) // Very low bitrate
         
-        // Ensure proper AVCC output with all NALs
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_H264EntropyMode, value: kVTH264EntropyMode_CAVLC)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse)
-        
-        // Quality settings for compatibility
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_Quality, value: 0.7 as CFNumber)
-        
-        if #available(macOS 10.13, *) {
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
-        }
+        // Minimize keyframe generation
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         
         VTCompressionSessionPrepareToEncodeFrames(session)
         print("✅ Video compression session initialized - ready for keyframe-first streaming")
@@ -243,14 +235,33 @@ final class QuicTransportPersistent {
     // MARK: - Compression Callback
     
     private let compressionOutputCallback: VTCompressionOutputCallback = { refcon, sourceFrameRefcon, status, infoFlags, sampleBuffer in
-        guard status == noErr,
-              let sampleBuffer = sampleBuffer,
-              let refcon = refcon else {
-            print("❌ Compression callback error: \(status)")
+        guard let refcon = refcon else {
+            print("❌ Compression callback: No refcon")
             return
         }
         
         let transport = Unmanaged<QuicTransportPersistent>.fromOpaque(refcon).takeUnretainedValue()
+        
+        guard status == noErr else {
+            let errorName: String
+            switch status {
+            case -12902: errorName = "kVTVideoEncoderMalfunctionErr (encoder malfunction)"
+            case -12903: errorName = "kVTVideoEncoderNotAvailableErr (encoder not available)"
+            case -12904: errorName = "kVTCouldNotFindVideoEncoderErr (encoder not found)"
+            case -12905: errorName = "kVTVideoEncoderAuthorizationErr (authorization error)"
+            case -12210: errorName = "kVTFrameSiloInvalidTimeStampErr (invalid timestamp)"
+            case -12211: errorName = "kVTFrameSiloInvalidTimeRangeErr (invalid time range)"
+            default: errorName = "Unknown error"
+            }
+            print("❌ Compression callback error: \(status) (\(errorName))")
+            return
+        }
+        
+        guard let sampleBuffer = sampleBuffer else {
+            print("❌ Compression callback: No sample buffer")
+            return
+        }
+        
         transport.handleCompressedFrame(sampleBuffer)
     }
     
@@ -431,6 +442,13 @@ final class QuicTransportPersistent {
     }
     
     private func handleCompressedFrame(_ sampleBuffer: CMSampleBuffer) {
+        // Move heavy frame processing off main thread
+        queue.async { [weak self] in
+            self?.processCompressedFrame(sampleBuffer)
+        }
+    }
+    
+    private func processCompressedFrame(_ sampleBuffer: CMSampleBuffer) {
         guard let connection = connection, isConnected else {
             print("❌ No connection available for compressed frame")
             return
@@ -567,25 +585,30 @@ final class QuicTransportPersistent {
             return
         }
         
+        // Frame timing analysis
+        let currentTime = CACurrentMediaTime()
+        if lastFrameTime > 0 {
+            let timeDelta = currentTime - lastFrameTime
+            if timeDelta > 0.1 { // More than 100ms gap (allowing for encoding delays)
+                droppedFrameCount += 1
+                print("⚠️ Frame gap detected: \(Int(timeDelta * 1000))ms (expected ~33-67ms) - possible drop #\(droppedFrameCount)")
+            }
+        }
+        lastFrameTime = currentTime
+        
         frameCounter += 1
         let currentFrameNumber = frameCounter
         
-        print("🎥 \(Date().timeIntervalSince1970): Sending frame #\(currentFrameNumber)")
+        // Only log every 30th frame to reduce spam
+        if currentFrameNumber % 30 == 0 {
+            print("🎥 Frame #\(currentFrameNumber) (dropped: \(droppedFrameCount))")
+        }
         
         // Create presentation timestamp
         let timestamp = CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 600)
         
-        // Force keyframe for first frame and then every 60 frames (2 seconds at 30fps)
-        var frameProperties: CFDictionary? = nil
-        if frameCounter == 1 || frameCounter % 60 == 0 {
-            frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
-            print("🔑 Forcing keyframe for frame #\(frameCounter)")
-        } else {
-            // Don't print for every frame to reduce log spam
-            if frameCounter % 30 == 0 {
-                print("📹 Regular frame #\(frameCounter)")
-            }
-        }
+        // Let VideoToolbox naturally decide when to generate keyframes
+        // No forced keyframes - this reduces encoding complexity significantly
         
         // Compress the frame
         let status = VTCompressionSessionEncodeFrame(
@@ -593,7 +616,7 @@ final class QuicTransportPersistent {
             imageBuffer: pixelBuffer,
             presentationTimeStamp: timestamp,
             duration: .invalid,
-            frameProperties: frameProperties,
+            frameProperties: nil, // No forced properties
             sourceFrameRefcon: nil,
             infoFlagsOut: nil
         )
@@ -601,8 +624,10 @@ final class QuicTransportPersistent {
         if status != noErr {
             print("❌ Failed to encode frame: \(status)")
         } else {
-            let timestamp = CACurrentMediaTime()
-            //print("📹 [\(String(format: "%.3f", timestamp))] Frame submitted for compression (connected: \(isConnected))")
+            // Only log every 20 frames to see if frames are being submitted
+            if currentFrameNumber % 20 == 0 {
+                print("📹 Frame #\(currentFrameNumber) submitted for compression")
+            }
         }
     }
     
