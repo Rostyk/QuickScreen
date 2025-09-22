@@ -44,18 +44,18 @@ final class QuicTransportPersistent {
         // Create QUIC parameters WITHOUT TLS wrapping
         let quicOptions = NWProtocolQUIC.Options(alpn: ["hq-interop"])
         
-        // Disable certificate verification for raw QUIC
+        // Disable certificate verification for AWS testing (localhost cert on remote server)
         sec_protocol_options_set_verify_block(quicOptions.securityProtocolOptions, { _, _, completion in
-            print("🔐 QUIC verification - accepting certificate")
+            print("🔐 QUIC verification - accepting AWS certificate (testing mode)")
             completion(true)
         }, DispatchQueue.main)
         
         // Create parameters with QUIC directly, no TLS layer
         let params = NWParameters(quic: quicOptions)
         
-        // Create direct connection
+        // Create direct connection to AWS server
         self.connection = NWConnection(
-            host: .name("127.0.0.1", nil),
+            host: .name("51.21.152.112", nil),
             port: .init(rawValue: 8443)!,
             using: params
         )
@@ -217,12 +217,13 @@ final class QuicTransportPersistent {
             return
         }
         
-        // WebCodecs-optimized VideoToolbox settings
+        // High-performance VideoToolbox settings for 30fps streaming
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse) // No B-frames
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 1_500_000 as CFNumber)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 15 as CFNumber)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 3_000_000 as CFNumber) // Higher bitrate
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 30 as CFNumber) // Keyframe every second
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber) // Explicit 30fps
         
         // Ensure proper AVCC output with all NALs
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_H264EntropyMode, value: kVTH264EntropyMode_CAVLC)
@@ -529,7 +530,11 @@ final class QuicTransportPersistent {
         
         let frameType = header.frameType == 0x01 ? "KEYFRAME" : "delta"
         let timestamp = CACurrentMediaTime()
-        print("🎥 [\(String(format: "%.3f", timestamp))] Compressed Frame #\(frameCounter): \(completeFrame.count) bytes (\(frameType))")
+        
+        // Only log keyframes and every 30th frame to reduce spam
+        if header.frameType == 0x01 || frameCounter % 30 == 0 {
+            print("🎥 [\(String(format: "%.3f", timestamp))] Compressed Frame #\(frameCounter): \(completeFrame.count) bytes (\(frameType))")
+        }
         
         // Send frame - let NWConnection handle flow control
         sendingQueue.async { [weak self] in
@@ -570,13 +575,16 @@ final class QuicTransportPersistent {
         // Create presentation timestamp
         let timestamp = CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 600)
         
-        // Force keyframe for first frame and then every 30 frames
+        // Force keyframe for first frame and then every 60 frames (2 seconds at 30fps)
         var frameProperties: CFDictionary? = nil
-        if frameCounter == 1 || frameCounter % 30 == 0 {
+        if frameCounter == 1 || frameCounter % 60 == 0 {
             frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
             print("🔑 Forcing keyframe for frame #\(frameCounter)")
         } else {
-            print("📹 Regular frame #\(frameCounter)")
+            // Don't print for every frame to reduce log spam
+            if frameCounter % 30 == 0 {
+                print("📹 Regular frame #\(frameCounter)")
+            }
         }
         
         // Compress the frame

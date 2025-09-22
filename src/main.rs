@@ -10,6 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{error, info, warn};
 use wtransport::{Endpoint as WtEndpoint, ServerConfig as WtServerConfig};
 use base64::Engine;
+use futures_util::SinkExt;
 
 /**
  * 🦀 Simplified Rust QUIC Video Relay Server
@@ -577,15 +578,15 @@ fn load_mkcert_certificate() -> Result<(Certificate, PrivateKey)> {
     use std::io::BufReader;
     
     let cert_paths = [
-        "localhost+1.pem",
-        "./localhost+1.pem", 
-        "../localhost+1.pem"
+        "server-cert.pem",
+        "./server-cert.pem", 
+        "../server-cert.pem"
     ];
     
     let key_paths = [
-        "localhost+1-key.pem",
-        "./localhost+1-key.pem",
-        "../localhost+1-key.pem"
+        "server-key.pem",
+        "./server-key.pem",
+        "../server-key.pem"
     ];
     
     let mut cert_file = None;
@@ -714,7 +715,6 @@ async fn handle_websocket_client(
 ) {
     info!("🔌 📡 WEBSOCKET SESSION STARTED (TCP/HTTP PROTOCOL)");
     use tokio_tungstenite::tungstenite::Message;
-    use futures_util::SinkExt;
     use base64::Engine;
     
     // Send stored avcC configuration to new client if available
@@ -844,7 +844,7 @@ async fn start_webtransport_server(relay_server: VideoRelayServer) {
     info!("🚀 Starting WebTransport server on localhost:4433...");
     
     // Load TLS identity for WebTransport
-    let identity = match wtransport::Identity::load_pemfiles("localhost+1.pem", "localhost+1-key.pem").await {
+    let identity = match wtransport::Identity::load_pemfiles("server-cert.pem", "server-key.pem").await {
         Ok(identity) => identity,
         Err(e) => {
             error!("❌ Failed to load WebTransport TLS identity: {}", e);
@@ -855,7 +855,7 @@ async fn start_webtransport_server(relay_server: VideoRelayServer) {
     // Configure WebTransport server
     let config = WtServerConfig::builder()
         .with_bind_default(4433)
-        .with_identity(identity)
+        .with_identity(&identity)
         .build();
     
     // Create WebTransport endpoint

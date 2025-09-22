@@ -450,7 +450,7 @@
                 updateStatus('🔄 Connecting...', 'connecting');
                 
                 // Create WebSocket connection
-                websocket = new WebSocket('ws://localhost:8080');
+                websocket = new WebSocket('ws://51-21-152-112.nip.io:8080');
                 
                 websocket.onopen = async () => {
                     updateStatus('✅ Connected to WebSocket server', 'connected');
@@ -692,7 +692,7 @@
                 updateStatus('🚀 Connecting via WebTransport...', 'connecting');
                 
                 // Create WebTransport connection
-                const webtransport = new WebTransport('https://localhost:4433/');
+                const webtransport = new WebTransport('https://51-21-152-112.nip.io:4433/');
                 
                 webtransport.ready.then(() => {
                     updateStatus('✅ Connected to WebTransport server', 'connected');
