@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QUIC Video Stream - WebCodecs v2.0</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: white;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #4CAF50;
+        }
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 0 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        .video-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+        video {
+            max-width: 100%;
+            height: auto;
+            border: 2px solid #4CAF50;
+            border-radius: 10px;
+        }
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .status.connected {
+            background: #2d5a2d;
+            color: #4CAF50;
+        }
+        .status.disconnected {
+            background: #5a2d2d;
+            color: #f44336;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #ccc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 QUIC Video Stream via WebTransport</h1>
+        
+        <div class="controls">
+            <button id="connectBtn">Connect via WebSocket 📡</button>
+            <button id="connectWtBtn">Connect via WebTransport 🚀</button>
+            <button id="disconnectBtn" disabled>Disconnect</button>
+        </div>
+
+        <div id="status" class="status disconnected">
+            ❌ Disconnected
+        </div>
+
+        <div class="video-container">
+            <canvas id="view" width="1920" height="1080" style="background:#000; width: 100%; max-width: 1200px; height: auto;"></canvas>
+    <div style="background: #ccffcc; padding: 10px; margin: 10px 0; border-radius: 5px; border: 1px solid #00cc00;">
+        <strong>🎥 Pure WebCodecs H.264 Decoder:</strong><br>
+        ✅ Receiving H.264 stream via WebSocket<br>
+        🔧 Direct WebCodecs with proper avcC configuration<br>
+        💡 <strong>Hardware-accelerated browser playback!</strong>
+    </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="framesReceived">0</div>
+                <div class="stat-label">Frames Received</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="bytesReceived">0</div>
+                <div class="stat-label">Bytes Received</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="fps">0</div>
+                <div class="stat-label">FPS</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="bitrate">0</div>
+                <div class="stat-label">Bitrate (kbps)</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Remove MP4Box for now - it's complex and needs proper setup -->
+    <!-- <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script> -->
+    
+    <script type="module">
+        console.log('🎥 LOADING WEBCODECS H.264 DECODER v28.0 - BINARY WEBTRANSPORT!');
+        
+        // Check browser and WebCodecs support
+        console.log('🌐 Browser info:', {
+            userAgent: navigator.userAgent,
+            webCodecsSupported: 'VideoDecoder' in window,
+            hardwareAcceleration: navigator.hardwareConcurrency || 'unknown'
+        });
+        
+        // Test basic WebCodecs support
+        if ('VideoDecoder' in window) {
+            try {
+                const testSupport = await VideoDecoder.isConfigSupported({
+                    codec: 'avc1.42E01E' // Baseline profile
+                });
+                console.log('🧪 Basic WebCodecs test (Baseline Profile):', testSupport);
+            } catch (e) {
+                console.error('🧪 Basic WebCodecs test failed:', e);
+            }
+        } else {
+            console.error('❌ WebCodecs not supported in this browser!');
+        }
+        
+        const canvas = document.getElementById('view');
+        const ctx = canvas.getContext('2d', { desynchronized: true });
+
+        // --- WebCodecs with proper avcC handling ---
+        let decoder;
+        let gotConfig = false;
+        let avccConfig = null;
+        let t0 = performance.now();
+        let frameCount = 0;
+
+        function hex2(n) { return n.toString(16).padStart(2,'0').toUpperCase(); }
+
+        // Parse AVCC Access Unit and detect IDR frames
+        function parseAvccAU(avccBytes) {
+            const dv = new DataView(avccBytes.buffer, avccBytes.byteOffset, avccBytes.byteLength);
+            let off = 0, isIDR = false;
+            const nals = [];
+
+            while (off + 4 <= avccBytes.length) {
+                const len = dv.getUint32(off, false); // big-endian
+                off += 4;
+                if (len === 0 || off + len > avccBytes.length) throw new Error('Bad AVCC lengths');
+                const type = avccBytes[off] & 0x1F;
+                nals.push({ type, len });
+                if (type === 5) isIDR = true; // IDR
+                off += len;
+            }
+            if (off !== avccBytes.length) throw new Error('Trailing bytes in AU');
+            return { nals, isIDR };
+        }
+
+        async function configureDecoderWithAvcc(avccData) {
+            console.log('🔧 Configuring decoder with avcC:', avccData.length, 'bytes');
+            console.log('🔧 avcC preview:', Array.from(avccData.slice(0, 16)).map(b => hex2(b)).join(' '));
+            
+            // Extract codec string from avcC
+            const profile_idc = avccData[1];
+            const compat = avccData[2];
+            const level_idc = avccData[3];
+            const lengthSizeMinusOne = avccData[4] & 0x03;
+            const codec = `avc1.${hex2(profile_idc)}${hex2(compat)}${hex2(level_idc)}`;
+            
+            console.log('🔧 Codec string from avcC:', codec);
+            console.log('🔧 avcC lengthSize:', lengthSizeMinusOne + 1);
+            
+            if (lengthSizeMinusOne !== 3) {
+                console.warn('⚠️ Unexpected lengthSize:', lengthSizeMinusOne + 1, '(expected 4)');
+            }
+            
+            // Force software decoding to rule out hardware decoder issues
+            let config = { codec, description: avccData, hardwareAcceleration: 'prefer-software' };
+            let testSupport;
+            
+            try {
+                testSupport = await VideoDecoder.isConfigSupported(config);
+                
+                if (!testSupport.supported) {
+                    console.error('❌ Software codec not supported:', codec);
+                    return false;
+                }
+                
+                console.log('✅ Codec supported:', codec, 'with SOFTWARE decoding (forced)');
+            } catch (e) {
+                console.error('❌ Codec support test failed:', e);
+                return false;
+            }
+
+            // Create decoder
+            decoder = new VideoDecoder({
+                output: (frame) => {
+                    try {
+                        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+                        console.log('🎬 Frame rendered:', frame.codedWidth + 'x' + frame.codedHeight);
+                    } finally {
+                        frame.close();
+                    }
+                },
+                error: (e) => {
+                    console.error('❌ Decoder error:', e.name, e.message);
+                    console.error('❌ Decoder state:', decoder?.state);
+                    
+                    // Close the failed decoder
+                    try { decoder.close(); } catch {}
+                    decoder = null;
+                    gotConfig = false;
+                    waitingForKeyframe = true;
+                    
+                    console.log('🔄 Decoder reset - waiting for next keyframe to recover...');
+                }
+            });
+
+            // Configure decoder
+            try {
+                decoder.configure(config);
+                gotConfig = true;
+                avccConfig = avccData;
+                console.log('✅ Decoder configured with server avcC:', codec, 'using', config.hardwareAcceleration);
+                return true;
+            } catch (e) {
+                console.error('❌ Decoder configuration failed:', e);
+                decoder = null;
+                gotConfig = false;
+                return false;
+            }
+        }
+
+        // Store H.264 data for download fallback
+        let h264Buffer = [];
+        let downloadReady = false;
+        
+        // Process video frames in AVCC format
+        async function processVideoFrame(message) {
+            // Decode base64 H.264 data
+            const avccData = new Uint8Array(atob(message.data).split('').map(c => c.charCodeAt(0)));
+            
+            // Parse AVCC AU and detect IDR from bitstream (ignore server frame_type)
+            let parsed;
+            try {
+                parsed = parseAvccAU(avccData);
+                const nalDetails = parsed.nals.map(n => `${n.type}(${n.len}b)`).join(',');
+                console.log(`🔍 AVCC AU #${message.frame_number}: ${parsed.nals.length} NALs → ${nalDetails}`);
+                
+                // Detailed NAL analysis for first few frames
+                if (message.frame_number <= 550 && message.frame_number >= 540) {
+                    parsed.nals.forEach((nal, i) => {
+                        const nalTypeNames = {
+                            1: 'P-frame', 2: 'Partition-A', 3: 'Partition-B', 4: 'Partition-C',
+                            5: 'IDR', 6: 'SEI', 7: 'SPS', 8: 'PPS', 9: 'AUD', 12: 'Filler'
+                        };
+                        const typeName = nalTypeNames[nal.type] || 'Unknown';
+                        console.log(`  📋 NAL ${i}: Type ${nal.type} (${typeName}), ${nal.len} bytes`);
+                    });
+                }
+            } catch (e) {
+                console.error('❌ AVCC validation failed:', e.message);
+                return;
+            }
+
+            const isKeyframe = parsed.isIDR; // Derive from bitstream, not server flag
+            console.log(`📦 Processing H.264 frame #${message.frame_number}: ${avccData.length} bytes (${isKeyframe ? 'KEYFRAME' : 'DELTA'})`);
+            
+            // Update stats
+            stats.framesReceived++;
+            stats.bytesReceived += avccData.length;
+            if (isKeyframe) stats.keyframes++;
+            
+            // Update display
+            updateStats();
+            
+            // Try WebCodecs decoding
+            await processAvccFrame(avccData, isKeyframe);
+        }
+
+        // Process binary video frames (for WebTransport)
+        async function processVideoFrameBinary(message) {
+            // message.data_binary is already Uint8Array - no base64 decoding needed!
+            const avccData = message.data_binary;
+            
+            // Parse AVCC AU and detect IDR from bitstream (ignore server frame_type)
+            let parsed;
+            try {
+                parsed = parseAvccAU(avccData);
+                const nalDetails = parsed.nals.map(n => `${n.type}(${n.len}b)`).join(',');
+                console.log(`🔍 BINARY AU #${message.frame_number}: ${parsed.nals.length} NALs → ${nalDetails}`);
+            } catch (e) {
+                console.error('❌ BINARY AVCC validation failed:', e.message);
+                return;
+            }
+
+            const isKeyframe = parsed.isIDR; // Derive from bitstream, not server flag
+            console.log(`📦 Processing BINARY H.264 frame #${message.frame_number}: ${avccData.length} bytes (${isKeyframe ? 'KEYFRAME' : 'DELTA'})`);
+            
+            // Update stats
+            stats.framesReceived++;
+            stats.bytesReceived += avccData.length;
+            updateStats();
+            
+            // Try WebCodecs decoding (same as regular frames)
+            await processAvccFrame(avccData, isKeyframe);
+        }
+
+        // Process AVCC frames (length-prefixed NAL units)
+        let waitingForKeyframe = true;
+        
+        async function processAvccFrame(avccData, isKeyframe) {
+            if (!gotConfig || !decoder || decoder.state !== 'configured') {
+                console.log('⏳ Decoder not ready, skipping frame...');
+                return;
+            }
+            
+            // Wait for keyframe after decoder configuration
+            if (waitingForKeyframe && !isKeyframe) {
+                console.log('⏳ Waiting for keyframe to start decoding...');
+                return;
+            }
+            
+            if (waitingForKeyframe && isKeyframe) {
+                waitingForKeyframe = false;
+                console.log('🎉 First keyframe received - starting decoding!');
+                
+                // If decoder was reset due to error, reconfigure it
+                if (!gotConfig && avccConfig) {
+                    console.log('🔄 Reconfiguring decoder after error recovery...');
+                    await configureDecoderWithAvcc(avccConfig);
+                    if (!gotConfig) {
+                        console.error('❌ Failed to reconfigure decoder');
+                        return;
+                    }
+                }
+            }
+            
+            // Use simple sequential timestamps to avoid timing issues
+            const timestampUs = frameCount * 33333; // 30fps = 33.333ms intervals
+            frameCount++;
+            
+            try {
+                const chunk = new EncodedVideoChunk({
+                    type: isKeyframe ? 'key' : 'delta',
+                    timestamp: timestampUs, // Sequential timestamps
+                    data: avccData
+                });
+                
+                decoder.decode(chunk);
+                console.log(`🎬 Decoded ${isKeyframe ? 'KEYFRAME' : 'delta'} #${frameCount}: ${avccData.length} bytes (ts: ${timestampUs}μs)`);
+                
+                // Debug: Log failing frame data for analysis
+                if (frameCount <= 5) {
+                    const preview = Array.from(avccData.slice(0, 32)).map(b => hex2(b)).join(' ');
+                    console.log(`🔍 Frame #${frameCount} AVCC preview: ${preview}`);
+                }
+            } catch (e) {
+                console.error('❌ Decode failed:', e);
+                
+                // Log failing frame for analysis
+                if (frameCount <= 5) {
+                    const preview = Array.from(avccData.slice(0, 64)).map(b => hex2(b)).join(' ');
+                    console.error(`💥 FAILING Frame #${frameCount} (${avccData.length}b): ${preview}`);
+                }
+            }
+        }
+
+        // Old decoder configuration removed - now using server-provided avcC
+        
+        let websocket = null;
+        let stats = {
+            framesReceived: 0,
+            bytesReceived: 0,
+            startTime: null,
+            lastFrameTime: null
+        };
+
+        // Setup button event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('connectBtn').addEventListener('click', connect);
+            document.getElementById('connectWtBtn').addEventListener('click', connectWebTransport);
+            document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+        });
+
+        function updateStatus(message, className) {
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = message;
+            statusElement.className = `status ${className}`;
+        }
+
+        function disconnect() {
+            if (websocket) {
+                websocket.close();
+                websocket = null;
+            }
+            if (decoder) {
+                decoder.close();
+                decoder = null;
+            }
+            gotConfig = false;
+            avccConfig = null;
+            frameCount = 0;
+            waitingForKeyframe = true;
+            updateStatus('❌ Disconnected', 'disconnected');
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+        }
+
+
+        async function connect() {
+            try {
+                updateStatus('🔄 Connecting...', 'connecting');
+                
+                // Create WebSocket connection
+                websocket = new WebSocket('ws://localhost:8080');
+                
+                websocket.onopen = async () => {
+                    updateStatus('✅ Connected to WebSocket server', 'connected');
+                    stats.startTime = Date.now();
+                    
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+                };
+                
+                websocket.onmessage = async (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        if (message.type === 'video_frame') {
+                            // Handle avcC configuration frames
+                            if (message.frame_type === 255) { // 0xFF = avcC config
+                                console.log('🔧 Received avcC configuration from server');
+                                const avccData = new Uint8Array(atob(message.data).split('').map(c => c.charCodeAt(0)));
+                                await configureDecoderWithAvcc(avccData);
+                            } else {
+                                // Handle regular video frames (AVCC format)
+                                await processVideoFrame(message);
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Failed to parse WebSocket message:', error);
+                    }
+                };
+                
+                websocket.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatus('❌ WebSocket error', 'disconnected');
+                };
+                
+                websocket.onclose = () => {
+                    updateStatus('❌ WebSocket disconnected', 'disconnected');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                };
+                
+            } catch (error) {
+                console.error('Connection failed:', error);
+                updateStatus(`❌ Connection failed: ${error.message}`, 'disconnected');
+            }
+        }
+
+
+        async function processH264Frame(message) {
+            stats.framesReceived++;
+            
+            // Decode base64 H.264 data
+            const h264Data = atob(message.data);
+            const bytes = new Uint8Array(h264Data.length);
+            for (let i = 0; i < h264Data.length; i++) {
+                bytes[i] = h264Data.charCodeAt(i);
+            }
+            
+            stats.bytesReceived += bytes.byteLength;
+            console.log(`📦 Processing H.264 frame #${message.frame_number}: ${bytes.length} bytes`);
+
+            // Split into NAL units (without start codes)
+            const nals = [...iterateNalUnitsAnnexB(bytes)];
+            if (nals.length === 0) return;
+
+            // Debug: Show first few bytes of H.264 data
+            if (message.frame_number % 30 === 0) {
+                const preview = Array.from(bytes.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                console.log(`🔍 H.264 data preview: ${preview}`);
+            }
+
+            // Track SPS/PPS whenever we see them (log only first time)
+            for (const n of nals) {
+                const t = nalType(n);
+                if (t === 7) {
+                    if (!spsLatest) {
+                        console.log(`📋 Found SPS NAL unit (${n.length} bytes): ${Array.from(n.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+                    }
+                    spsLatest = n; // Always update SPS
+                }
+                if (t === 8) {
+                    if (!ppsLatest) {
+                        console.log(`📋 Found PPS NAL unit (${n.length} bytes): ${Array.from(n.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+                    }
+                    ppsLatest = n; // Always update PPS
+                }
+            }
+
+            // Decide if this chunk is a key frame (has an IDR NAL)
+            const key = nals.some(isIDR);
+            console.log(`🎬 Frame type: ${key ? 'KEYFRAME' : 'DELTA'} (${nals.length} NAL units)`);
+
+            // Wait for keyframe before starting decoding
+            if (waitingForKeyframe && !key) {
+                console.log('⏳ Waiting for keyframe to start decoding...');
+                return;
+            }
+
+            // Configure decoder when we have SPS+PPS and not already configured
+            if (!gotConfig && spsLatest && ppsLatest) {
+                await ensureDecoderConfigured();
+                if (!gotConfig) {
+                    console.log('⏳ Failed to configure decoder...');
+                    return;
+                }
+            }
+
+            // If this is our first keyframe, we can start decoding
+            if (waitingForKeyframe && key) {
+                waitingForKeyframe = false;
+                console.log('🎉 First keyframe received - starting decoding!');
+            }
+
+            // Make sure decoder is ready
+            if (!gotConfig || !decoder) {
+                console.log('⏳ Decoder not ready, skipping frame...');
+                return;
+            }
+            
+            // Debug: Show decoder state
+            if (decoder.state !== "configured") {
+                console.log(`🔧 Decoder state: ${decoder.state} (expected: configured)`);
+            }
+
+            // WebCodecs accepts H.264 with Annex-B framing when configured with avcC description.
+            // Provide monotonically increasing timestamps in microseconds.
+            const timestampUs = Math.round((performance.now() - t0) * 1000);
+
+            try {
+                // Debug: Show what we're sending to decoder for keyframes
+                if (key) {
+                    console.log(`🔧 Keyframe data (${bytes.length}b): ${Array.from(bytes.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+                    console.log(`🔧 NAL units in keyframe: ${nals.map(n => `type=${nalType(n)}(${n.length}b)`).join(', ')}`);
+                }
+                
+                // Debug: Show NAL types for delta frames too
+                if (!key && message.frame_number % 10 === 0) {
+                    console.log(`🔧 Delta frame NAL units: ${nals.map(n => `type=${nalType(n)}(${n.length}b)`).join(', ')}`);
+                }
+
+                // For WebCodecs with avcC description, we might need to send only the video data (IDR/P-frames)
+                // without the SPS/PPS since they're already in the decoder configuration
+                let frameData = bytes;
+                
+                // For Annex B format WITHOUT description:
+                // - Keyframes: send complete frame (SPS + PPS + IDR) 
+                // - Delta frames: send only P-frame data (no SPS/PPS repetition)
+                // Keep original Annex B format with start codes
+                
+                if (key) {
+                    // Keyframe: send all NAL units (SPS + PPS + IDR)
+                    console.log(`🔧 Keyframe: keeping complete Annex B format (${bytes.length} bytes)`);
+                    frameData = bytes;
+                    
+                    for (const nal of nals) {
+                        const nalType = nal[0] & 0x1F;
+                        console.log(`🔧 NAL type ${nalType} (${nalType === 7 ? 'SPS' : nalType === 8 ? 'PPS' : nalType === 5 ? 'IDR' : 'Other'}): ${nal.length} bytes`);
+                    }
+                } else {
+                    // Delta frame: send only P-frame data (skip SPS/PPS)
+                    const pFrameNals = nals.filter(nal => {
+                        const nalType = nal[0] & 0x1F;
+                        return nalType === 1; // Only P-frames
+                    });
+                    
+                    if (pFrameNals.length === 0) {
+                        console.log(`⚠️ No P-frame NAL units found in delta frame`);
+                        return;
+                    }
+                    
+                    // Reconstruct Annex B format with only P-frames
+                    const parts = [];
+                    let totalSize = 0;
+                    
+                    for (const nal of pFrameNals) {
+                        const startCode = new Uint8Array([0x00, 0x00, 0x00, 0x01]);
+                        parts.push(startCode, nal);
+                        totalSize += 4 + nal.length;
+                        console.log(`🔧 NAL type 1 (P-frame): ${nal.length} bytes`);
+                    }
+                    
+                    frameData = new Uint8Array(totalSize);
+                    let offset = 0;
+                    for (const part of parts) {
+                        frameData.set(part, offset);
+                        offset += part.length;
+                    }
+                    
+                    console.log(`🔧 Delta frame: reconstructed Annex B with ${pFrameNals.length} P-frame(s) (${frameData.length} bytes)`);
+                }
+
+                // Debug: Show first few bytes of Annex B data
+                const annexBPreview = Array.from(frameData.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                console.log(`🔧 Annex B data preview: ${annexBPreview}`);
+                
+                const chunk = new EncodedVideoChunk({
+                    type: key ? 'key' : 'delta',
+                    timestamp: timestampUs,
+                    data: frameData,
+                });
+                
+                console.log(`🔧 Chunk created: type=${chunk.type}, timestamp=${chunk.timestamp}, byteLength=${chunk.byteLength}`);
+                console.log(`🔧 Decoder state before decode: ${decoder.state}`);
+                
+                decoder.decode(chunk);
+                console.log(`✅ Queued ${key ? 'keyframe' : 'delta'} for decoding (${frameData.length} bytes, Annex B format)`);
+                console.log(`🔧 Decoder queue length: ${decoder.decodeQueueSize}`);
+                
+                // For delta frames, add a small delay to let keyframe decode first
+                if (!key) {
+                    console.log(`⏳ Delta frame queued, waiting for keyframe to decode...`);
+                }
+            } catch (e) {
+                console.warn('❌ Decode drop:', e);
+                // Don't reset decoder on individual frame errors - keep trying
+            }
+            
+            // Update stats
+            updateStats();
+        }
+
+
+        function updateStats() {
+            document.getElementById('framesReceived').textContent = stats.framesReceived;
+            document.getElementById('bytesReceived').textContent = (stats.bytesReceived / 1024 / 1024).toFixed(2) + ' MB';
+            
+            if (stats.startTime) {
+                const elapsed = (Date.now() - stats.startTime) / 1000;
+                const fps = stats.framesReceived / elapsed;
+                const bitrate = (stats.bytesReceived * 8) / elapsed / 1000; // kbps
+                
+                document.getElementById('fps').textContent = fps.toFixed(1) + ' fps';
+                document.getElementById('bitrate').textContent = bitrate.toFixed(0) + ' kbps';
+            }
+        }
+
+
+
+        async function connectWebTransport() {
+            try {
+                updateStatus('🚀 Connecting via WebTransport...', 'connecting');
+                
+                // Create WebTransport connection
+                const webtransport = new WebTransport('https://localhost:4433/');
+                
+                webtransport.ready.then(() => {
+                    updateStatus('✅ Connected to WebTransport server', 'connected');
+                    stats.startTime = Date.now();
+                    
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('connectWtBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+                    
+                    // Handle incoming unidirectional streams
+                    handleWebTransportStreams(webtransport);
+                });
+                
+                webtransport.closed.then(() => {
+                    updateStatus('❌ WebTransport disconnected', 'disconnected');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('connectWtBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                });
+                
+            } catch (error) {
+                console.error('WebTransport connection failed:', error);
+                updateStatus(`❌ WebTransport failed: ${error.message}`, 'disconnected');
+            }
+        }
+        
+        async function handleWebTransportStreams(webtransport) {
+            const reader = webtransport.incomingUnidirectionalStreams.getReader();
+            
+            try {
+                while (true) {
+                    const { value: stream, done } = await reader.read();
+                    if (done) break;
+                    
+                    // Handle each incoming stream (BINARY format)
+                    handleWebTransportBinaryStream(stream);
+                }
+            } catch (error) {
+                console.error('WebTransport stream error:', error);
+            }
+        }
+        
+        let streamBuffer = new Uint8Array(0);
+        
+        async function readExactBytes(reader, numBytes) {
+            while (streamBuffer.length < numBytes) {
+                const { value, done } = await reader.read();
+                if (done) throw new Error('Stream ended unexpectedly');
+                
+                const newBuffer = new Uint8Array(streamBuffer.length + value.length);
+                newBuffer.set(streamBuffer);
+                newBuffer.set(value, streamBuffer.length);
+                streamBuffer = newBuffer;
+            }
+            
+            const result = streamBuffer.slice(0, numBytes);
+            streamBuffer = streamBuffer.slice(numBytes);
+            return result;
+        }
+        
+        async function handleWebTransportBinaryStream(stream) {
+            const reader = stream.getReader();
+            
+            try {
+                while (true) {
+                    // Read binary frame header: [frame_type:1][frame_number:4][timestamp:8][data_size:4]
+                    const headerBytes = await readExactBytes(reader, 17); // 1+4+8+4 = 17 bytes
+                    const headerView = new DataView(headerBytes.buffer);
+                    
+                    const frameType = headerView.getUint8(0);
+                    const frameNumber = headerView.getUint32(1, true); // little-endian
+                    const timestamp = headerView.getBigUint64(5, true); // little-endian
+                    const dataSize = headerView.getUint32(13, true); // little-endian
+                    
+                    // Read the binary data
+                    const frameData = await readExactBytes(reader, dataSize);
+                    
+                    // Handle avcC configuration frames
+                    if (frameType === 255) { // 0xFF = avcC config
+                        console.log('🚀 Received avcC configuration from WebTransport server (BINARY)');
+                        await configureDecoderWithAvcc(frameData);
+                    } else {
+                        // Handle regular video frames - create message object for compatibility
+                        const message = {
+                            type: 'video_frame',
+                            frame_number: frameNumber,
+                            timestamp: Number(timestamp),
+                            frame_type: frameType,
+                            data_binary: frameData // Raw binary data, no base64!
+                        };
+                        
+                        await processVideoFrameBinary(message);
+                    }
+                }
+            } catch (error) {
+                console.error('WebTransport binary stream error:', error);
+            }
+        }
+
+        // Check WebSocket support (should be available in all modern browsers)
+        if (!('WebSocket' in window)) {
+            updateStatus('❌ WebSocket not supported in this browser', 'disconnected');
+            document.getElementById('connectBtn').disabled = true;
+        }
+        
+        // Check WebTransport support
+        if (!('WebTransport' in window)) {
+            console.warn('⚠️ WebTransport not supported in this browser');
+            document.getElementById('connectWtBtn').disabled = true;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+//
+//  Untitled.swift
+//  QuicScreenSharing
+//
+//  Created by Rostyslav Stepanyak on 9/19/25.
+//
+import SwiftUI
+import ScreenCaptureKit
+import AVFoundation
+import CoreMedia
+import CoreVideo
+
+final class ScreenCaptureManager: NSObject, SCStreamOutput {
+    private var stream: SCStream?
+    private var filter: SCContentFilter?
+    private var config = SCStreamConfiguration()
+    private let outputQueue = DispatchQueue(label: "ScreenCapture.OutputQueue")
+    private let quicTransport = QuicTransportPersistent()
+
+    private(set) var isCapturing = false
+
+    // Configure and start capture of the main display.
+    func start() async throws {
+        print("🚀 ScreenCaptureManager.start() called")
+        guard !isCapturing else { 
+            print("⚠️ Already capturing, returning early")
+            return 
+        }
+        
+        // 1) Discover shareable content and pick the main (first) display.
+        let content = try await SCShareableContent.current
+        guard let display = content.displays.first else {
+            throw NSError(domain: "ScreenCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: "No displays available to capture."])
+        }
+        
+        print("📺 Display found: \(display.width)x\(display.height)")
+
+        // Connect to QUIC server first
+        print("🔗 Connecting to QUIC server...")
+        quicTransport.connect()
+        
+        // Setup compression with actual screen dimensions
+        quicTransport.setupVideoCompression(width: Int32(display.width), height: Int32(display.height))
+
+        // 2) Build a content filter that captures the chosen display.
+        //    You can exclude individual windows/apps if desired.
+        let filter = SCContentFilter(display: display,
+                                     excludingApplications: [],
+                                     exceptingWindows: [])
+        self.filter = filter
+
+        // 3) Configure streaming parameters.
+        let cfg = SCStreamConfiguration()
+        cfg.capturesAudio = false
+        cfg.pixelFormat = kCVPixelFormatType_32BGRA
+        // Target 30 fps for smooth streaming
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        // Optionally match the display size. If you prefer to downscale, set width/height smaller.
+        cfg.width  = display.width
+        cfg.height = display.height
+        // If you want to capture the cursor:
+        cfg.showsCursor = true
+
+        self.config = cfg
+
+        // 4) Create the stream and attach ourselves as the output.
+        let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
+        self.stream = stream
+
+        // Add a video output. (Use .audio too if you also capture audio.)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: outputQueue)
+
+        // 5) Start!
+        try await stream.startCapture()
+        isCapturing = true
+    }
+
+    func stop() {
+        guard isCapturing else { return }
+        Task {
+            do {
+                try await stream?.stopCapture()
+            } catch {
+                // Handle stop errors if needed
+            }
+            if let stream = stream {
+                try? stream.removeStreamOutput(self, type: .screen)
+            }
+            self.stream = nil
+            self.filter = nil
+            self.isCapturing = false
+            
+            // Disconnect QUIC transport
+            self.quicTransport.disconnect()
+        }
+    }
+
+    // MARK: - SCStreamOutput
+
+    func stream(_ stream: SCStream,
+                didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+                of type: SCStreamOutputType) {
+        guard type == .screen else { return }
+
+        // Validate and extract CVPixelBuffer from CMSampleBuffer.
+        guard CMSampleBufferIsValid(sampleBuffer),
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
+
+        // Hand off the frame for QUIC transport
+        let timestamp = CACurrentMediaTime()
+        //print("📹 [\(String(format: "%.3f", timestamp))] Captured frame: \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))")
+        quicTransport.sendFrame(pixelBuffer)
+    }
+
+    // Optional: observe stream errors.
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        // You might want to surface this to the UI.
+        // print("Stream stopped with error: \(error)")
+        isCapturing = false
+    }
+}
+
+extension ScreenCaptureManager: SCStreamDelegate {
+
+}
