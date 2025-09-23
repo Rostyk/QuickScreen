@@ -95,9 +95,9 @@ impl VideoRelayServer {
         let server_config = configure_server(cert, key)?;
         
         // Create QUIC endpoint
-        info!("🚀 Creating QUIC endpoint on 127.0.0.1:8443...");
-        let endpoint = Endpoint::server(server_config, "127.0.0.1:8443".parse()?)?;
-        info!("🔗 ✅ QUIC server listening on: 127.0.0.1:8443");
+        info!("🚀 Creating QUIC endpoint on 0.0.0.0:8443...");
+        let endpoint = Endpoint::server(server_config, "0.0.0.0:8443".parse()?)?;
+        info!("🔗 ✅ QUIC server listening on: 0.0.0.0:8443");
 
         // Start statistics reporting
         let stats_clone = self.stats.clone();
@@ -827,7 +827,7 @@ async fn start_http_server() {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+        .with_env_filter(tracing_subscriber::EnvFilter::new("quic_video_relay=info,warn"))
         .init();
 
     let server = VideoRelayServer::new();

@@ -179,7 +179,7 @@
                 
                 <div class="decoder-info">
                     <h3>🧠 WebCodecs H.264</h3>
-                    <p><strong>Hardware Acceleration:</strong> Direct H.264 decoding with GPU support. <strong>Zero Dependencies:</strong> Pure browser-native decoding. <strong>QUIC/WebSocket:</strong> Ultra-low latency transport. <strong>Real-time:</strong> Frame-by-frame processing.</p>
+                    <p><strong>Decoder:</strong> <span id="decoderType">Not initialized</span> <strong>Zero Dependencies:</strong> Pure browser-native decoding. <strong>QUIC/WebSocket:</strong> Ultra-low latency transport. <strong>Real-time:</strong> Frame-by-frame processing.</p>
                 </div>
             </div>
 
@@ -300,18 +300,29 @@
                 console.warn('⚠️ Unexpected lengthSize:', lengthSizeMinusOne + 1, '(expected 4)');
             }
             
-            // Force software decoding for stability (hardware decoder crashes after ~7 frames)
-            let config = { codec, description: avccData, hardwareAcceleration: 'prefer-software' };
+            // Try hardware decoding first (should work well with quality 0.1 + stable stream)
+            let config = { codec, description: avccData, hardwareAcceleration: 'prefer-hardware' };
             let testSupport;
             
             try {
                 testSupport = await VideoDecoder.isConfigSupported(config);
                 
                 if (!testSupport.supported) {
-                    console.error('❌ Software codec not supported:', codec);
-                    return false;
+                    console.warn('⚠️ Hardware decoding not supported, trying software...');
+                    // Fallback to software decoding
+                    config = { codec, description: avccData, hardwareAcceleration: 'prefer-software' };
+                    testSupport = await VideoDecoder.isConfigSupported(config);
+                    
+                    if (!testSupport.supported) {
+                        console.error('❌ Neither hardware nor software codec supported:', codec);
+                        return false;
+                    } else {
+                        console.log('✅ Codec supported:', codec, 'with SOFTWARE decoding (fallback)');
+                        document.getElementById('decoderType').textContent = 'Software CPU H.264 decoder (fallback)';
+                    }
                 } else {
-                    console.log('✅ Codec supported:', codec, 'with SOFTWARE decoding');
+                    console.log('✅ Codec supported:', codec, 'with HARDWARE decoding');
+                    document.getElementById('decoderType').textContent = 'Hardware GPU H.264 decoder';
                 }
             } catch (e) {
                 console.error('❌ Codec support test failed:', e);
@@ -347,9 +358,51 @@
                     // Close the failed decoder
                     try { decoder.close(); } catch {}
                     decoder = null;
+                    
+                    // If hardware decoder failed, try software fallback
+                    if (config.hardwareAcceleration === 'prefer-hardware') {
+                        console.warn('⚠️ Hardware decoder failed, switching to software decoder...');
+                        config.hardwareAcceleration = 'prefer-software';
+                        
+                        // Recreate decoder with software decoding
+                        try {
+                            decoder = new VideoDecoder({
+                                output: (frame) => {
+                                    requestAnimationFrame(() => {
+                                        try {
+                                            if (canvas.width !== frame.codedWidth || canvas.height !== frame.codedHeight) {
+                                                resizeCanvas(frame.codedWidth, frame.codedHeight);
+                                            }
+                                            document.getElementById('resolution').textContent = `${frame.codedWidth}x${frame.codedHeight}`;
+                                            ctx.drawImage(frame, 0, 0, frame.codedWidth, frame.codedHeight);
+                                            console.log('🎬 Frame rendered:', frame.codedWidth + 'x' + frame.codedHeight);
+                                        } finally {
+                                            frame.close();
+                                        }
+                                    });
+                                },
+                                error: (e) => {
+                                    console.error('❌ Software decoder error:', e.name, e.message);
+                                    try { decoder.close(); } catch {}
+                                    decoder = null;
+                                    gotConfig = false;
+                                    waitingForKeyframe = true;
+                                    console.log('🔄 Software decoder also failed - waiting for next keyframe...');
+                                }
+                            });
+                            
+                            decoder.configure(config);
+                            console.log('✅ Switched to SOFTWARE decoder successfully');
+                            document.getElementById('decoderType').textContent = 'Software CPU H.264 decoder (auto-fallback)';
+                            return; // Don't reset gotConfig - keep trying to decode
+                        } catch (fallbackError) {
+                            console.error('❌ Software decoder fallback failed:', fallbackError);
+                        }
+                    }
+                    
+                    // Reset decoder state
                     gotConfig = false;
                     waitingForKeyframe = true;
-                    
                     console.log('🔄 Decoder reset - waiting for next keyframe to recover...');
                 }
             });
@@ -360,6 +413,14 @@
                 gotConfig = true;
                 avccConfig = avccData;
                 console.log('✅ Decoder configured with server avcC:', codec, 'using', config.hardwareAcceleration);
+                
+                // Update decoder type display
+                if (config.hardwareAcceleration === 'prefer-hardware') {
+                    document.getElementById('decoderType').textContent = 'Hardware GPU H.264 decoder';
+                } else {
+                    document.getElementById('decoderType').textContent = 'Software CPU H.264 decoder';
+                }
+                
                 return true;
             } catch (e) {
                 console.error('❌ Decoder configuration failed:', e);

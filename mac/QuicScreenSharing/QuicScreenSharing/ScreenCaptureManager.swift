@@ -54,7 +54,7 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         // For real-time streaming, performance > perfect color accuracy
         
         // Target 15 fps for stable real-time streaming (more time for encoding)
-        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 22) // 30 FPS for smooth video
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 20) // 30 FPS for smooth video
         
         // Scale to 1080p for better text readability - good balance of quality and performance
         // Scale down to a reasonable streaming resolution while maintaining aspect ratio

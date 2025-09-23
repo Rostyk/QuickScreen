@@ -239,15 +239,15 @@ final class QuicTransportPersistent {
         // Large keyframes (150-190KB) are causing 200ms encoding delays
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber) // 4 seconds - balance startup vs encoding load
         
-        // Higher bitrate for 1080p resolution and better text readability
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 3_000_000 as CFNumber) // 3 Mbps for 1080p
+        // Further reduced bitrate for ultra-smooth streaming
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 1_000_000 as CFNumber) // 1 Mbps - eliminate remaining stutters
         
-        // Higher data rate limits for better quality
-        let dataRateLimits: [NSNumber] = [4_000_000, 1] // 4 Mbps max, 1 second window
+        // Tight data rate limits to prevent any keyframe spikes
+        let dataRateLimits: [NSNumber] = [1_200_000, 1] // 1.2 Mbps max, 1 second window - hard cap
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         
-        // Higher quality setting for better text clarity
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_Quality, value: 0.1 as CFNumber) // 0.8 = higher quality for text
+        // Moderate quality to balance encoding speed and keyframe size
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_Quality, value: 0.6 as CFNumber) // 0.6 = balanced quality and performance
         
         // Use baseline profile for consistent, predictable encoding
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
