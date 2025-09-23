@@ -91,7 +91,7 @@
         }
         .stats {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 15px;
             margin: 15px 0;
         }
@@ -127,6 +127,11 @@
             line-height: 1.4;
         }
         @media (max-width: 768px) {
+            .stats {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+        @media (max-width: 480px) {
             .stats {
                 grid-template-columns: repeat(2, 1fr);
             }
@@ -165,6 +170,10 @@
                     <div class="stat-card">
                         <div class="stat-value" id="bitrate">0</div>
                         <div class="stat-label">Bitrate</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="resolution">0x0</div>
+                        <div class="stat-label">Resolution</div>
                     </div>
                 </div>
                 
@@ -291,25 +300,18 @@
                 console.warn('⚠️ Unexpected lengthSize:', lengthSizeMinusOne + 1, '(expected 4)');
             }
             
-            // Try hardware acceleration first, fallback to software
-            let config = { codec, description: avccData, hardwareAcceleration: 'prefer-hardware' };
+            // Force software decoding for stability (hardware decoder crashes after ~7 frames)
+            let config = { codec, description: avccData, hardwareAcceleration: 'prefer-software' };
             let testSupport;
             
             try {
                 testSupport = await VideoDecoder.isConfigSupported(config);
                 
                 if (!testSupport.supported) {
-                    console.warn('⚠️ Hardware acceleration not supported, trying software...');
-                    config = { codec, description: avccData, hardwareAcceleration: 'prefer-software' };
-                    testSupport = await VideoDecoder.isConfigSupported(config);
-                    
-                    if (!testSupport.supported) {
-                        console.error('❌ Neither hardware nor software codec supported:', codec);
-                        return false;
-                    }
-                    console.log('✅ Codec supported:', codec, 'with SOFTWARE decoding (fallback)');
+                    console.error('❌ Software codec not supported:', codec);
+                    return false;
                 } else {
-                    console.log('✅ Codec supported:', codec, 'with HARDWARE decoding');
+                    console.log('✅ Codec supported:', codec, 'with SOFTWARE decoding');
                 }
             } catch (e) {
                 console.error('❌ Codec support test failed:', e);
@@ -326,6 +328,9 @@
                             if (canvas.width !== frame.codedWidth || canvas.height !== frame.codedHeight) {
                                 resizeCanvas(frame.codedWidth, frame.codedHeight);
                             }
+                            
+                            // Update resolution stat
+                            document.getElementById('resolution').textContent = `${frame.codedWidth}x${frame.codedHeight}`;
                             
                             // Draw frame at full resolution
                             ctx.drawImage(frame, 0, 0, frame.codedWidth, frame.codedHeight);
@@ -511,7 +516,7 @@
 
         // Setup button event listeners
         document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('connectBtn').addEventListener('click', connect);
+            document.getElementById('connectBtn').addEventListener('click', connectWebSocket);
             document.getElementById('connectWtBtn').addEventListener('click', connectWebTransport);
             document.getElementById('disconnectBtn').addEventListener('click', disconnect);
         });
@@ -530,6 +535,10 @@
                 websocket.close();
                 websocket = null;
             }
+            if (webtransport) {
+                webtransport.close();
+                webtransport = null;
+            }
             if (decoder) {
                 decoder.close();
                 decoder = null;
@@ -540,60 +549,11 @@
             waitingForKeyframe = true;
             updateStatus('❌ Disconnected', 'disconnected');
             document.getElementById('connectBtn').disabled = false;
+            document.getElementById('connectWtBtn').disabled = false;
             document.getElementById('disconnectBtn').disabled = true;
         }
 
 
-        async function connect() {
-            try {
-                updateStatus('🔄 Connecting...', 'connecting');
-                
-                // Create WebSocket connection
-                websocket = new WebSocket('wss://51-21-152-112.nip.io/ws');
-                
-                websocket.onopen = async () => {
-                    updateStatus('✅ Connected to WebSocket server', 'connected');
-                    stats.startTime = Date.now();
-                    
-                    document.getElementById('connectBtn').disabled = true;
-                    document.getElementById('disconnectBtn').disabled = false;
-                };
-                
-                websocket.onmessage = async (event) => {
-                    try {
-                        const message = JSON.parse(event.data);
-                        if (message.type === 'video_frame') {
-                            // Handle avcC configuration frames
-                            if (message.frame_type === 255) { // 0xFF = avcC config
-                                console.log('🔧 Received avcC configuration from server');
-                                const avccData = new Uint8Array(atob(message.data).split('').map(c => c.charCodeAt(0)));
-                                await configureDecoderWithAvcc(avccData);
-                            } else {
-                                // Handle regular video frames (AVCC format)
-                                await processVideoFrame(message);
-                            }
-                        }
-                    } catch (error) {
-                        console.error('Failed to parse WebSocket message:', error);
-                    }
-                };
-                
-                websocket.onerror = (error) => {
-                    console.error('WebSocket error:', error);
-                    updateStatus('❌ WebSocket error', 'disconnected');
-                };
-                
-                websocket.onclose = () => {
-                    updateStatus('❌ WebSocket disconnected', 'disconnected');
-                    document.getElementById('connectBtn').disabled = false;
-                    document.getElementById('disconnectBtn').disabled = true;
-                };
-                
-            } catch (error) {
-                console.error('Connection failed:', error);
-                updateStatus(`❌ Connection failed: ${error.message}`, 'disconnected');
-            }
-        }
 
 
         async function processH264Frame(message) {
@@ -791,7 +751,7 @@
                 updateStatus('🚀 Connecting via WebTransport...', 'connecting');
                 
                 // Create WebTransport connection
-                const webtransport = new WebTransport('https://51-21-152-112.nip.io:4433/');
+                webtransport = new WebTransport('https://51-21-152-112.nip.io:4433/');
                 
                 webtransport.ready.then(() => {
                     updateStatus('✅ Connected to WebTransport server', 'connected');
@@ -891,6 +851,80 @@
             }
         }
 
+        let webtransport = null;
+        
+        async function connectWebSocket() {
+            try {
+                updateStatus('🔌 Connecting to WebSocket server...', 'disconnected');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('connectWtBtn').disabled = true;
+                
+                // Use secure WebSocket for HTTPS pages, regular WebSocket for HTTP
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                // For HTTPS, try WebSocket on same domain/port, for HTTP use port 8080
+                const wsUrl = window.location.protocol === 'https:' 
+                    ? `wss://51-21-152-112.nip.io/ws`  // Try same port as HTTPS
+                    : `ws://51-21-152-112.nip.io:8080/ws`;
+                
+                // Create WebSocket connection
+                websocket = new WebSocket(wsUrl);
+                
+                websocket.onopen = async () => {
+                    updateStatus('✅ Connected to WebSocket server', 'connected');
+                    stats.startTime = Date.now();
+                    document.getElementById('disconnectBtn').disabled = false;
+                };
+                
+                websocket.onmessage = async (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        console.log('📨 WebSocket message received:', message.type, message);
+                        
+                        if (message.type === 'avcc_config') {
+                            console.log('🚀 Received avcC configuration from WebSocket server');
+                            const configData = new Uint8Array(atob(message.data).split('').map(c => c.charCodeAt(0)));
+                            await configureDecoderWithAvcc(configData);
+                        } else if (message.type === 'video_frame') {
+                            // Handle avcC configuration frames
+                            if (message.frame_type === 255) { // 0xFF = avcC config
+                                console.log('🚀 Received avcC configuration from WebSocket server (in video_frame)');
+                                const configData = new Uint8Array(atob(message.data).split('').map(c => c.charCodeAt(0)));
+                                await configureDecoderWithAvcc(configData);
+                            } else {
+                                // Handle regular video frames
+                                await processVideoFrame(message);
+                            }
+                        } else {
+                            console.log('🤷 Unknown WebSocket message type:', message.type);
+                        }
+                    } catch (error) {
+                        console.error('WebSocket message processing error:', error);
+                    }
+                };
+                
+                websocket.onclose = () => {
+                    updateStatus('❌ WebSocket disconnected', 'disconnected');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('connectWtBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                    websocket = null;
+                };
+                
+                websocket.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatus('❌ WebSocket connection failed', 'disconnected');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('connectWtBtn').disabled = false;
+                };
+                
+            } catch (error) {
+                console.error('WebSocket connection failed:', error);
+                updateStatus(`❌ WebSocket failed: ${error.message}`, 'disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('connectWtBtn').disabled = false;
+            }
+        }
+        
         // Check WebSocket support (should be available in all modern browsers)
         if (!('WebSocket' in window)) {
             updateStatus('❌ WebSocket not supported in this browser', 'disconnected');

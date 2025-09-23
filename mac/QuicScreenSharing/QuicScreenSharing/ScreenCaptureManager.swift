@@ -38,9 +38,6 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         // Connect to QUIC server first
         print("🔗 Connecting to QUIC server...")
         quicTransport.connect()
-        
-        // Setup compression with actual screen dimensions
-        quicTransport.setupVideoCompression(width: Int32(display.width), height: Int32(display.height))
 
         // 2) Build a content filter that captures the chosen display.
         //    You can exclude individual windows/apps if desired.
@@ -56,9 +53,9 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         // Target 15 fps for stable real-time streaming (more time for encoding)
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30) // 30 FPS for smooth video
         
-        // Scale to 720p - good balance of quality and performance
-        let targetWidth = 1280
-        let targetHeight = 720
+        // Scale to 1080p for better text readability - good balance of quality and performance
+        let targetWidth = 1920
+        let targetHeight = 1080
         let aspectRatio = Double(display.width) / Double(display.height)
         
         if aspectRatio > (Double(targetWidth) / Double(targetHeight)) {
@@ -75,8 +72,16 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         
         print("📏 Scaled resolution: \(display.width)x\(display.height) → \(cfg.width)x\(cfg.height) (optimized for encoding)")
         
+        // CRITICAL FIX: Setup compression with the SAME resolution as ScreenCaptureKit
+        // This ensures VideoToolbox and ScreenCaptureKit use matching dimensions
+        quicTransport.setupVideoCompression(width: Int32(cfg.width), height: Int32(cfg.height))
+        
         // If you want to capture the cursor:
         cfg.showsCursor = true
+        
+        // CRITICAL FIX: Allow small buffer (2-3) for headroom during brief encode/network spikes
+        // queueDepth = 1 was too strict and caused frame drops during transient stalls
+        cfg.queueDepth = 2 // Small buffer provides ~66ms headroom at 30fps
 
         self.config = cfg
 

@@ -19,6 +19,18 @@ final class QuicTransportPersistent {
     // Frame sending queue
     private let sendingQueue = DispatchQueue(label: "quic.sending", qos: .userInitiated)
     
+    // Dedicated encoding queue to prevent blocking SCStream output queue
+    private let encodeQueue = DispatchQueue(label: "quic.encoding", qos: .userInitiated)
+    
+    // In-flight bytes tracking for flow control
+    private var inFlightBytes: Int = 0
+    private let inFlightLock = DispatchQueue(label: "quic.inflight.lock")
+    private let maxInFlightBytes = 2 * 1024 * 1024 // 2 MB threshold
+    
+    // Encode queue depth tracking to prevent encoder backpressure
+    private var pendingEncodes: Int = 0
+    private let maxPendingEncodes = 3 // Limit concurrent encodes
+    
     // Frame header structure (matches Rust server)
     private struct StreamFrameHeader {
         let magic: UInt32 = 0x53545246        // "STRF" - Stream Frame
@@ -219,14 +231,32 @@ final class QuicTransportPersistent {
             return
         }
         
-        // Ultra-minimal settings - let VideoToolbox decide keyframes naturally
+        // Anti-stutter settings optimized to prevent keyframe encoding delays
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 300 as CFNumber) // Very rare keyframes - 10 seconds
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 300_000 as CFNumber) // Very low bitrate
         
-        // Minimize keyframe generation
+        // CRITICAL: Reduce keyframe frequency to minimize encoding spikes
+        // Large keyframes (150-190KB) are causing 200ms encoding delays
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber) // 4 seconds - balance startup vs encoding load
+        
+        // Higher bitrate for 1080p resolution and better text readability
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 3_000_000 as CFNumber) // 3 Mbps for 1080p
+        
+        // Higher data rate limits for better quality
+        let dataRateLimits: [NSNumber] = [4_000_000, 1] // 4 Mbps max, 1 second window
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
+        
+        // Higher quality setting for better text clarity
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_Quality, value: 0.8 as CFNumber) // 0.8 = higher quality for text
+        
+        // Use baseline profile for consistent, predictable encoding
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)
+        
+        // Minimize keyframe generation and disable frame reordering for low latency
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        
+        // CRITICAL: Limit maximum frame delay to prevent encoding queue buildup
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber) // No delay buffering
         
         VTCompressionSessionPrepareToEncodeFrames(session)
         print("✅ Video compression session initialized - ready for keyframe-first streaming")
@@ -241,6 +271,11 @@ final class QuicTransportPersistent {
         }
         
         let transport = Unmanaged<QuicTransportPersistent>.fromOpaque(refcon).takeUnretainedValue()
+        
+        // CRITICAL FIX: Release the retained pixel buffer passed in sourceFrameRefcon
+        if let sourceRef = sourceFrameRefcon {
+            Unmanaged<CVPixelBuffer>.fromOpaque(sourceRef).release()
+        }
         
         guard status == noErr else {
             let errorName: String
@@ -554,21 +589,42 @@ final class QuicTransportPersistent {
             print("🎥 [\(String(format: "%.3f", timestamp))] Compressed Frame #\(frameCounter): \(completeFrame.count) bytes (\(frameType))")
         }
         
-        // Send frame - let NWConnection handle flow control
+        // Send frame with in-flight bytes tracking and flow control
         sendingQueue.async { [weak self] in
             guard let self = self else { return }
+            
+            // CRITICAL FIX: Drop frame early if we have too many bytes outstanding
+            var shouldDrop = false
+            self.inFlightLock.sync {
+                if self.inFlightBytes + completeFrame.count > self.maxInFlightBytes {
+                    shouldDrop = true
+                } else {
+                    self.inFlightBytes += completeFrame.count
+                }
+            }
+            
+            if shouldDrop {
+                print("⚠️ Dropping frame #\(header.frameNumber) - in-flight bytes exceed \(self.maxInFlightBytes / (1024*1024))MB threshold")
+                return
+            }
             
             // Let NWConnection manage the stream automatically
             let streamContext = NWConnection.ContentContext.defaultMessage
             
-            //print("📤 Sending frame (\(completeFrame.count) bytes)")
-            
             connection.send(content: completeFrame, contentContext: streamContext, isComplete: false, completion: .contentProcessed { [weak self] error in
+                guard let self = self else { return }
+                
+                // Decrement in-flight bytes regardless of success or failure
+                self.inFlightLock.sync {
+                    self.inFlightBytes = max(0, self.inFlightBytes - completeFrame.count)
+                }
+                
                 if let error = error {
                     print("❌ Failed to send compressed frame: \(error)")
                 } else {
+                    // Success - frame delivered
                     let timestamp = CACurrentMediaTime()
-                   // print("✅ [\(String(format: "%.3f", timestamp))] Compressed Frame #\(self?.frameCounter ?? 0) sent successfully (\(completeFrame.count) bytes)")
+                   // print("✅ [\(String(format: "%.3f", timestamp))] Compressed Frame sent successfully (\(completeFrame.count) bytes)")
                 }
             })
         }
@@ -585,13 +641,15 @@ final class QuicTransportPersistent {
             return
         }
         
-        // Frame timing analysis
+        // Frame timing analysis - be more lenient to allow natural frame timing variations
         let currentTime = CACurrentMediaTime()
         if lastFrameTime > 0 {
             let timeDelta = currentTime - lastFrameTime
-            if timeDelta > 0.1 { // More than 100ms gap (allowing for encoding delays)
+            // Allow for natural variations and encoding complexity - 200ms threshold
+            // At 30fps, normal frame time is ~33ms, but encoding can cause natural delays
+            if timeDelta > 0.2 { // More than 200ms gap - likely a real issue
                 droppedFrameCount += 1
-                print("⚠️ Frame gap detected: \(Int(timeDelta * 1000))ms (expected ~33-67ms) - possible drop #\(droppedFrameCount)")
+                print("⚠️ Significant frame gap: \(Int(timeDelta * 1000))ms (expected ~33ms) - possible issue #\(droppedFrameCount)")
             }
         }
         lastFrameTime = currentTime
@@ -604,30 +662,57 @@ final class QuicTransportPersistent {
             print("🎥 Frame #\(currentFrameNumber) (dropped: \(droppedFrameCount))")
         }
         
+        // CRITICAL FIX: Check encoder backpressure before queuing more work
+        if pendingEncodes >= maxPendingEncodes {
+            print("⚠️ Dropping frame #\(currentFrameNumber) - encoder backpressure (\(pendingEncodes) pending)")
+            return
+        }
+        
+        // CRITICAL FIX: Retain the pixelBuffer for asynchronous encode
+        // This prevents blocking SCStream's output queue
+        let retained = Unmanaged.passRetained(pixelBuffer).toOpaque()
+        
         // Create presentation timestamp
         let timestamp = CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 600)
         
-        // Let VideoToolbox naturally decide when to generate keyframes
-        // No forced keyframes - this reduces encoding complexity significantly
+        // Track pending encodes to prevent backpressure
+        pendingEncodes += 1
         
-        // Compress the frame
-        let status = VTCompressionSessionEncodeFrame(
-            session,
-            imageBuffer: pixelBuffer,
-            presentationTimeStamp: timestamp,
-            duration: .invalid,
-            frameProperties: nil, // No forced properties
-            sourceFrameRefcon: nil,
-            infoFlagsOut: nil
-        )
-        
-        if status != noErr {
-            print("❌ Failed to encode frame: \(status)")
-        } else {
-            // Only log every 20 frames to see if frames are being submitted
-            if currentFrameNumber % 20 == 0 {
-                print("📹 Frame #\(currentFrameNumber) submitted for compression")
+        // Dispatch encode to encodeQueue so SCStream outputQueue isn't blocked
+        encodeQueue.async { [weak self] in
+            guard let self = self else {
+                // release retained buffer if we can't access self
+                Unmanaged<CVPixelBuffer>.fromOpaque(retained).release()
+                return
             }
+            
+            // Let VideoToolbox naturally decide when to generate keyframes
+            // No forced keyframes - this reduces encoding complexity significantly
+            
+            // Compress the frame
+            let status = VTCompressionSessionEncodeFrame(
+                session,
+                imageBuffer: pixelBuffer,
+                presentationTimeStamp: timestamp,
+                duration: .invalid,
+                frameProperties: nil, // No forced properties
+                sourceFrameRefcon: retained, // pass retained pointer to callback
+                infoFlagsOut: nil
+            )
+            
+            if status != noErr {
+                print("❌ Failed to encode frame: \(status)")
+                // release retained buffer on encode failure
+                Unmanaged<CVPixelBuffer>.fromOpaque(retained).release()
+            } else {
+                // Only log every 20 frames to see if frames are being submitted
+                if currentFrameNumber % 20 == 0 {
+                    print("📹 Frame #\(currentFrameNumber) submitted for compression")
+                }
+            }
+            
+            // Decrement pending encodes count (done in encode queue)
+            self.pendingEncodes = max(0, self.pendingEncodes - 1)
         }
     }
     
