@@ -233,7 +233,7 @@ final class QuicTransportPersistent {
         
         // Anti-stutter settings optimized to prevent keyframe encoding delays
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 22 as CFNumber)
         
         // CRITICAL: Reduce keyframe frequency to minimize encoding spikes
         // Large keyframes (150-190KB) are causing 200ms encoding delays
@@ -247,7 +247,7 @@ final class QuicTransportPersistent {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         
         // Higher quality setting for better text clarity
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_Quality, value: 0.8 as CFNumber) // 0.8 = higher quality for text
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_Quality, value: 0.1 as CFNumber) // 0.8 = higher quality for text
         
         // Use baseline profile for consistent, predictable encoding
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_Baseline_AutoLevel)

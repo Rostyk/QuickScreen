@@ -50,10 +50,14 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         let cfg = SCStreamConfiguration()
         cfg.capturesAudio = false
         cfg.pixelFormat = kCVPixelFormatType_32BGRA
+        // Removed color space settings - they improved colors but caused stuttering
+        // For real-time streaming, performance > perfect color accuracy
+        
         // Target 15 fps for stable real-time streaming (more time for encoding)
-        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30) // 30 FPS for smooth video
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 22) // 30 FPS for smooth video
         
         // Scale to 1080p for better text readability - good balance of quality and performance
+        // Scale down to a reasonable streaming resolution while maintaining aspect ratio
         let targetWidth = 1920
         let targetHeight = 1080
         let aspectRatio = Double(display.width) / Double(display.height)
@@ -81,7 +85,7 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         
         // CRITICAL FIX: Allow small buffer (2-3) for headroom during brief encode/network spikes
         // queueDepth = 1 was too strict and caused frame drops during transient stalls
-        cfg.queueDepth = 2 // Small buffer provides ~66ms headroom at 30fps
+        cfg.queueDepth = 8 // Small buffer provides ~66ms headroom at 30fps
 
         self.config = cfg
 
