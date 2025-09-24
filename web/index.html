@@ -321,24 +321,24 @@
             // Create decoder
             decoder = new VideoDecoder({
                 output: (frame) => {
-                    // Use requestAnimationFrame for smooth rendering
-                    requestAnimationFrame(() => {
-                        try {
-                            // Resize canvas if video dimensions changed
-                            if (canvas.width !== frame.codedWidth || canvas.height !== frame.codedHeight) {
-                                resizeCanvas(frame.codedWidth, frame.codedHeight);
-                            }
-                            
-                            // Update resolution stat
-                            document.getElementById('resolution').textContent = `${frame.codedWidth}x${frame.codedHeight}`;
-                            
-                            // Draw frame at full resolution
-                            ctx.drawImage(frame, 0, 0, frame.codedWidth, frame.codedHeight);
-                            console.log('🎬 Frame rendered:', frame.codedWidth + 'x' + frame.codedHeight);
-                        } finally {
-                            frame.close();
+                    // Process frames immediately without requestAnimationFrame batching to reduce stuttering
+                    try {
+                        // Resize canvas if video dimensions changed
+                        if (canvas.width !== frame.codedWidth || canvas.height !== frame.codedHeight) {
+                            canvas.width = frame.codedWidth;
+                            canvas.height = frame.codedHeight;
+                            console.log(`📐 Canvas resized: ${canvas.width}x${canvas.height}`);
                         }
-                    });
+                        
+                        // Update resolution stat
+                        document.getElementById('resolution').textContent = `${frame.codedWidth}x${frame.codedHeight}`;
+                        
+                        // Draw frame at full resolution immediately
+                        ctx.drawImage(frame, 0, 0, frame.codedWidth, frame.codedHeight);
+                        console.log('🎬 Frame rendered:', frame.codedWidth + 'x' + frame.codedHeight);
+                    } finally {
+                        frame.close();
+                    }
                 },
                 error: (e) => {
                     console.error('❌ Decoder error:', e.name, e.message);
