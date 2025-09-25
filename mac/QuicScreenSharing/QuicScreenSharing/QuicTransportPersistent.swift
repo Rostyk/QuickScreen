@@ -240,10 +240,10 @@ final class QuicTransportPersistent {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber) // 4 seconds - balance startup vs encoding load
         
         // OPTIMIZATION: Moderate bitrate for consistent frame sizes (reduces 99KB+ spikes)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 1_500_000 as CFNumber) // 1.5 Mbps - balanced quality/consistency
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 3_500_000 as CFNumber) // 1.5 Mbps - balanced quality/consistency
         
         // OPTIMIZATION: Tighter data rate limits to prevent large frame bursts
-        let dataRateLimits: [NSNumber] = [1_800_000, 1] // 1.8 Mbps max, 1 second window - prevents >50KB frames
+        let dataRateLimits: [NSNumber] = [3_800_000, 1] // 1.8 Mbps max, 1 second window - prevents >50KB frames
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
         
         // OPTIMIZATION: Lower quality for consistent encoding times (reduces 110ms+ delays)

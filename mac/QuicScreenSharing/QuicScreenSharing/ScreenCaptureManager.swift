@@ -82,7 +82,7 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         
         // OPTIMIZATION: Small buffer for smooth flow while preventing excessive batching
         // Balance between frame drops (queueDepth=1) and burst accumulation (queueDepth=3+)
-        cfg.queueDepth = 2 // Small buffer - prevents drops while minimizing batching
+        cfg.queueDepth = 4 // Small buffer - prevents drops while minimizing batching
 
         self.config = cfg
 

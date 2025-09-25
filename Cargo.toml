@@ -4,18 +4,34 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0"
-bytes = "1.5"
-quinn = "0.10"
-rustls = "0.21"
-rustls-pemfile = "1.0"
-rcgen = "0.11"
+# Core async runtime
 tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-tungstenite = "0.20"
-futures-util = "0.3"
-base64 = "0.21"
+
+# QUIC and networking
+quinn = "0.10"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+rustls-pemfile = "1.0"
+wtransport = "0.1"
+
+# Data handling
+bytes = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-wtransport = "0.1"
+base64 = "0.21"
+futures-util = "0.3"
+
+# WebSocket support (fallback)
+tokio-tungstenite = "0.20"
+
+# TLS certificate generation
+rcgen = { version = "0.11", features = ["pem"] }
+
+# Real MOQ dependencies - using the correct high-level APIs
+moq-lite = "0.7.1"
+moq-native = "0.8.3"
+tokio-stream = "0.1"
+async-trait = "0.1"
+hyper = { version = "1.0", features = ["full"] }
