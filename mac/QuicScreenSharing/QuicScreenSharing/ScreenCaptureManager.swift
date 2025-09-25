@@ -53,6 +53,7 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         // Target 15 fps for stable real-time streaming (more time for encoding)
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30) // 30 FPS for smooth video
         
+        
         // Scale to 1080p for better text readability - good balance of quality and performance
         let targetWidth = 1920
         let targetHeight = 1080
@@ -79,9 +80,9 @@ final class ScreenCaptureManager: NSObject, SCStreamOutput {
         // If you want to capture the cursor:
         cfg.showsCursor = true
         
-        // CRITICAL FIX: Allow small buffer (2-3) for headroom during brief encode/network spikes
-        // queueDepth = 1 was too strict and caused frame drops during transient stalls
-        cfg.queueDepth = 2 // Small buffer provides ~66ms headroom at 30fps
+        // OPTIMIZATION: Small buffer for smooth flow while preventing excessive batching
+        // Balance between frame drops (queueDepth=1) and burst accumulation (queueDepth=3+)
+        cfg.queueDepth = 2 // Small buffer - prevents drops while minimizing batching
 
         self.config = cfg
 

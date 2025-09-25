@@ -95,9 +95,9 @@ impl VideoRelayServer {
         let server_config = configure_server(cert, key)?;
         
         // Create QUIC endpoint
-        info!("🚀 Creating QUIC endpoint on 127.0.0.1:8443...");
-        let endpoint = Endpoint::server(server_config, "127.0.0.1:8443".parse()?)?;
-        info!("🔗 ✅ QUIC server listening on: 127.0.0.1:8443");
+        info!("🚀 Creating QUIC endpoint on 0.0.0.0:8443...");
+        let endpoint = Endpoint::server(server_config, "0.0.0.0:8443".parse()?)?;
+        info!("🔗 ✅ QUIC server listening on: 0.0.0.0:8443");
 
         // Start statistics reporting
         let stats_clone = self.stats.clone();
@@ -560,8 +560,27 @@ fn configure_server(cert: Certificate, key: PrivateKey) -> Result<ServerConfig> 
         b"h3".to_vec(),
     ];
     
-    let server_config = ServerConfig::with_crypto(Arc::new(crypto_config));
-    info!("✅ QUIC server configured with ALPN: hq-interop, hq-29, h3");
+    // Configure QUIC transport for high-performance video streaming
+    let mut transport_config = quinn::TransportConfig::default();
+    
+    // Increase receive window for high-bandwidth video streams
+    transport_config.receive_window(quinn::VarInt::from_u32(8 * 1024 * 1024)); // 8MB receive window
+    transport_config.stream_receive_window(quinn::VarInt::from_u32(2 * 1024 * 1024)); // 2MB per stream
+    
+    // Increase send window for better throughput
+    transport_config.send_window(8 * 1024 * 1024); // 8MB send window
+    
+    // Optimize for low latency
+    transport_config.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
+    
+    // Allow more concurrent streams for multiple clients
+    transport_config.max_concurrent_uni_streams(quinn::VarInt::from_u32(100));
+    transport_config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(50));
+    
+    let mut server_config = ServerConfig::with_crypto(Arc::new(crypto_config));
+    server_config.transport = Arc::new(transport_config);
+    
+    info!("✅ QUIC server configured with optimized transport settings for video streaming");
     Ok(server_config)
 }
 
@@ -973,27 +992,26 @@ async fn handle_webtransport_session(connection: wtransport::Connection, relay_s
         let timestamp: u64 = video_frame.timestamp;
         let data_size: u32 = video_frame.data.len() as u32;
         
-        // Write binary header (17 bytes total)
-        if let Err(e) = send_stream.write_all(&[frame_type]).await {
-            error!("🚀 ❌ Failed to send frame_type via WebTransport: {}", e);
-            break;
-        }
-        if let Err(e) = send_stream.write_all(&frame_number.to_le_bytes()).await {
-            error!("🚀 ❌ Failed to send frame_number via WebTransport: {}", e);
-            break;
-        }
-        if let Err(e) = send_stream.write_all(&timestamp.to_le_bytes()).await {
-            error!("🚀 ❌ Failed to send timestamp via WebTransport: {}", e);
-            break;
-        }
-        if let Err(e) = send_stream.write_all(&data_size.to_le_bytes()).await {
-            error!("🚀 ❌ Failed to send data_size via WebTransport: {}", e);
+        // Create complete frame data in one buffer to avoid partial writes
+        let total_size = 1 + 4 + 8 + 4 + video_frame.data.len();
+        let mut frame_buffer = Vec::with_capacity(total_size);
+        
+        // Build complete frame in buffer
+        frame_buffer.push(frame_type);
+        frame_buffer.extend_from_slice(&frame_number.to_le_bytes());
+        frame_buffer.extend_from_slice(&timestamp.to_le_bytes());
+        frame_buffer.extend_from_slice(&data_size.to_le_bytes());
+        frame_buffer.extend_from_slice(&video_frame.data);
+        
+        // Send complete frame in one atomic write
+        if let Err(e) = send_stream.write_all(&frame_buffer).await {
+            error!("🚀 ❌ Failed to send frame #{} via WebTransport: {}", frame_number, e);
             break;
         }
         
-        // Write raw H.264 binary data (no base64 encoding!)
-        if let Err(e) = send_stream.write_all(&video_frame.data).await {
-            error!("🚀 ❌ Failed to send frame data via WebTransport: {}", e);
+        // Flush immediately to prevent buffering delays
+        if let Err(e) = send_stream.flush().await {
+            error!("🚀 ❌ Failed to flush WebTransport stream: {}", e);
             break;
         }
         

@@ -260,8 +260,86 @@
         let avccConfig = null;
         let t0 = performance.now();
         let frameCount = 0;
+        
+        // Frame sequence tracking for packet loss detection
+        let expectedFrameNumber = null;
+        let totalLostFrames = 0;
+        
+        // Frame timing analysis
+        let lastFrameTime = null;
+        let frameIntervals = [];
+        let slowFrameCount = 0;
+        let fastFrameCount = 0;
 
         function hex2(n) { return n.toString(16).padStart(2,'0').toUpperCase(); }
+        
+        // Check for frame sequence gaps (packet loss detection)
+        function checkFrameSequence(frameNumber) {
+            if (expectedFrameNumber === null) {
+                // First frame - initialize tracking
+                expectedFrameNumber = frameNumber + 1;
+                console.log(`🎬 Starting frame sequence tracking from #${frameNumber}`);
+                return;
+            }
+            
+            if (frameNumber !== expectedFrameNumber) {
+                if (frameNumber > expectedFrameNumber) {
+                    // Frames were lost
+                    const lostCount = frameNumber - expectedFrameNumber;
+                    totalLostFrames += lostCount;
+                    console.warn(`⚠️ FRAME LOSS DETECTED: Expected #${expectedFrameNumber}, got #${frameNumber} (${lostCount} frames lost, ${totalLostFrames} total lost)`);
+                } else if (frameNumber < expectedFrameNumber) {
+                    // Out of order or duplicate frame
+                    console.warn(`⚠️ OUT-OF-ORDER FRAME: Expected #${expectedFrameNumber}, got #${frameNumber} (duplicate or reordered)`);
+                    return; // Don't update expected number for out-of-order frames
+                }
+            }
+            
+            expectedFrameNumber = frameNumber + 1;
+        }
+        
+        // Analyze frame timing to detect speed variations
+        function analyzeFrameTiming(frameNumber) {
+            const now = performance.now();
+            
+            if (lastFrameTime !== null) {
+                const interval = now - lastFrameTime;
+                frameIntervals.push(interval);
+                
+                // Keep only last 30 intervals for rolling analysis
+                if (frameIntervals.length > 30) {
+                    frameIntervals.shift();
+                }
+                
+                // Calculate expected interval (15fps = 66.67ms, 30fps = 33.33ms)
+                const expectedInterval = 66.67; // Assuming 15fps from Mac app
+                const tolerance = expectedInterval * 0.5; // 50% tolerance
+                
+                if (interval > expectedInterval + tolerance) {
+                    slowFrameCount++;
+                    console.warn(`🐌 SLOW FRAME #${frameNumber}: ${interval.toFixed(1)}ms (expected ~${expectedInterval.toFixed(1)}ms) - ${slowFrameCount} slow frames total`);
+                } else if (interval < expectedInterval - tolerance) {
+                    fastFrameCount++;
+                    console.warn(`⚡ FAST FRAME #${frameNumber}: ${interval.toFixed(1)}ms (expected ~${expectedInterval.toFixed(1)}ms) - ${fastFrameCount} fast frames total`);
+                }
+                
+                // Log timing stats every 100 frames
+                if (frameNumber % 100 === 0 && frameIntervals.length >= 10) {
+                    const avgInterval = frameIntervals.reduce((a, b) => a + b, 0) / frameIntervals.length;
+                    const minInterval = Math.min(...frameIntervals);
+                    const maxInterval = Math.max(...frameIntervals);
+                    const jitter = maxInterval - minInterval;
+                    
+                    console.log(`📊 FRAME TIMING STATS (last ${frameIntervals.length} frames):`);
+                    console.log(`   Average: ${avgInterval.toFixed(1)}ms (${(1000/avgInterval).toFixed(1)} fps)`);
+                    console.log(`   Range: ${minInterval.toFixed(1)}ms - ${maxInterval.toFixed(1)}ms`);
+                    console.log(`   Jitter: ${jitter.toFixed(1)}ms`);
+                    console.log(`   Slow frames: ${slowFrameCount}, Fast frames: ${fastFrameCount}`);
+                }
+            }
+            
+            lastFrameTime = now;
+        }
 
         // Parse AVCC Access Unit and detect IDR frames
         function parseAvccAU(avccBytes) {
@@ -404,6 +482,9 @@
             const isKeyframe = parsed.isIDR; // Derive from bitstream, not server flag
             console.log(`📦 Processing H.264 frame #${message.frame_number}: ${avccData.length} bytes (${isKeyframe ? 'KEYFRAME' : 'DELTA'})`);
             
+            // Check for frame sequence gaps (packet loss detection)
+            checkFrameSequence(message.frame_number);
+            
             // Update stats
             stats.framesReceived++;
             stats.bytesReceived += avccData.length;
@@ -434,6 +515,12 @@
 
             const isKeyframe = parsed.isIDR; // Derive from bitstream, not server flag
             console.log(`📦 Processing BINARY H.264 frame #${message.frame_number}: ${avccData.length} bytes (${isKeyframe ? 'KEYFRAME' : 'DELTA'})`);
+            
+            // Check for frame sequence gaps (packet loss detection)
+            checkFrameSequence(message.frame_number);
+            
+            // Analyze frame timing to detect speed variations
+            analyzeFrameTiming(message.frame_number);
             
             // Update stats
             stats.framesReceived++;
@@ -547,6 +634,15 @@
             avccConfig = null;
             frameCount = 0;
             waitingForKeyframe = true;
+            
+            // Reset frame sequence tracking
+            expectedFrameNumber = null;
+            totalLostFrames = 0;
+            lastFrameTime = null;
+            frameIntervals = [];
+            slowFrameCount = 0;
+            fastFrameCount = 0;
+            
             updateStatus('❌ Disconnected', 'disconnected');
             document.getElementById('connectBtn').disabled = false;
             document.getElementById('connectWtBtn').disabled = false;
@@ -568,6 +664,9 @@
             
             stats.bytesReceived += bytes.byteLength;
             console.log(`📦 Processing H.264 frame #${message.frame_number}: ${bytes.length} bytes`);
+            
+            // Check for frame sequence gaps (packet loss detection)
+            checkFrameSequence(message.frame_number);
 
             // Split into NAL units (without start codes)
             const nals = [...iterateNalUnitsAnnexB(bytes)];
