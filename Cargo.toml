@@ -29,9 +29,12 @@ tokio-tungstenite = "0.20"
 # TLS certificate generation
 rcgen = { version = "0.11", features = ["pem"] }
 
-# Real MOQ dependencies - using the correct high-level APIs
-moq-lite = "0.7.1"
-moq-native = "0.8.3"
+# Official MOQ dependencies - exact versions from kixelated/moq-relay
+moq-lite = { version = "0.7", features = ["serde"] }
+moq-native = "0.8"
+hang = "0.5"  # For video streaming format compatibility
+web-transport-quinn = "0.8.1"
+web-transport-ws = "0.1"
 tokio-stream = "0.1"
 async-trait = "0.1"
 hyper = { version = "1.0", features = ["full"] }
