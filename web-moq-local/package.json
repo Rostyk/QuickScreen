@@ -1,0 +1,17 @@
+{
+  "name": "moq-video-client",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.2",
+    "vite": "^6.3.6"
+  },
+  "dependencies": {
+    "@kixelated/moq": "^0.9.1"
+  }
+}

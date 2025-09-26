@@ -69,7 +69,7 @@ final class QuicTransportPersistent {
         
         // Create direct connection to AWS server
         self.connection = NWConnection(
-            host: .name("51.21.152.112", nil),
+            host: .name("50.19.36.193", nil),
             port: .init(rawValue: 8443)!,
             using: params
         )
@@ -235,9 +235,12 @@ final class QuicTransportPersistent {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber)
         
-        // CRITICAL: Reduce keyframe frequency to minimize encoding spikes
-        // Large keyframes (150-190KB) are causing 200ms encoding delays
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber) // 4 seconds - balance startup vs encoding load
+        // FORCE MORE KEYFRAMES: Reduce interval to ensure keyframes are generated
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 15 as CFNumber) // VERY AGGRESSIVE: 0.5 second keyframes
+        
+        // FORCE IDR keyframes - disable B-frames and force baseline profile
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_H264EntropyMode, value: kVTH264EntropyMode_CAVLC)
         
         // OPTIMIZATION: Moderate bitrate for consistent frame sizes (reduces 99KB+ spikes)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: 3_500_000 as CFNumber) // 1.5 Mbps - balanced quality/consistency
@@ -301,6 +304,7 @@ final class QuicTransportPersistent {
     }
     
     private var avccSent = false
+    private var framesSinceLastKeyframe = 0
     
     private func sendAvccConfiguration(_ formatDescription: CMFormatDescription) {
         print("🔧 sendAvccConfiguration called")
@@ -495,14 +499,14 @@ final class QuicTransportPersistent {
             return
         }
         
-        // Send avcC configuration once at the beginning
-        if !avccSent, let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) {
-            print("🔧 Attempting to send avcC configuration...")
-            sendAvccConfiguration(formatDescription)
-            avccSent = true
-        } else if !avccSent {
-            print("❌ No format description available for avcC")
-        }
+        // avcC configuration sending DISABLED - client will use hardcoded config
+        // if !avccSent, let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) {
+        //     print("🔧 Attempting to send avcC configuration...")
+        //     sendAvccConfiguration(formatDescription)
+        //     avccSent = true
+        // } else if !avccSent {
+        //     print("❌ No format description available for avcC")
+        // }
         
         // Extract compressed data from the sample buffer (this is already in AVCC format)
         guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
@@ -549,8 +553,16 @@ final class QuicTransportPersistent {
             // Check NAL unit type (first byte after length prefix)
             if offset + 4 < compressedData.count {
                 let nalType = compressedData[offset + 4] & 0x1F
+                
+                // Log ALL NAL types to debug keyframe generation
+                if frameCounter % 10 == 0 || nalType == 5 || nalType == 7 || nalType == 8 {
+                    print("🔍 Frame #\(frameCounter): NAL type \(nalType) (\(nalType == 5 ? "IDR" : nalType == 7 ? "SPS" : nalType == 8 ? "PPS" : nalType == 1 ? "P-frame" : "Other"))")
+                }
+                
                 if nalType == 5 { // IDR frame
                     actuallyKeyframe = true
+                    framesSinceLastKeyframe = 0 // Reset counter when we find a real keyframe
+                    print("✅ Found REAL IDR keyframe (NAL type 5)! Frame #\(frameCounter)")
                     break
                 }
             }
@@ -685,8 +697,15 @@ final class QuicTransportPersistent {
                 return
             }
             
-            // Let VideoToolbox naturally decide when to generate keyframes
-            // No forced keyframes - this reduces encoding complexity significantly
+            // AGGRESSIVE KEYFRAME FORCING: Force keyframes every 15 frames (0.5 second at 30fps)
+            self.framesSinceLastKeyframe += 1
+            var frameProperties: CFDictionary? = nil
+            
+            if self.framesSinceLastKeyframe >= 15 {  // More frequent keyframes
+                print("🎯 FORCING KEYFRAME at frame \(self.framesSinceLastKeyframe)")
+                frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
+                self.framesSinceLastKeyframe = 0
+            }
             
             // Compress the frame
             let status = VTCompressionSessionEncodeFrame(
@@ -694,7 +713,7 @@ final class QuicTransportPersistent {
                 imageBuffer: pixelBuffer,
                 presentationTimeStamp: timestamp,
                 duration: .invalid,
-                frameProperties: nil, // No forced properties
+                frameProperties: frameProperties,
                 sourceFrameRefcon: retained, // pass retained pointer to callback
                 infoFlagsOut: nil
             )

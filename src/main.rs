@@ -11,6 +11,9 @@ use async_trait::async_trait;
 // Real MOQ imports - using the correct high-level APIs
 use moq_lite;
 use moq_native;
+use hang;
+use hang::catalog::{Catalog, Video, VideoConfig};
+// Note: H264 is not directly accessible, will use string codec instead
 
 /**
  * 🚀 MOQ-Inspired Video Relay Server with Built-in Backpressure
@@ -155,7 +158,8 @@ impl MOQInspiredVideoRelayServer {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("🚀 Starting Real MOQ Video Relay Server with Native Backpressure...");
+        info!("🚀 Starting Real MOQ Video Relay Server - VERSION 2.11 (Official Catalog Approach)");
+        info!("🔧 This version uses empty broadcast path like official samples");
 
         // Start QUIC server for macOS clients
         let server_clone = self.clone();
@@ -180,10 +184,7 @@ impl MOQInspiredVideoRelayServer {
             report_adaptive_statistics(stats_clone, clients_clone).await;
         });
 
-        // Start fallback HTTP server
-        tokio::spawn(async {
-            start_http_server().await;
-        });
+        // HTTP server will be started in MOQ server method with fingerprints
 
         // Background task for buffer management (MOQ concept)
         let server_bg = self.clone();
@@ -396,37 +397,10 @@ impl MOQInspiredVideoRelayServer {
         // Global backpressure check (MOQ concept)
         let _permit = self.global_semaphore.acquire().await?;
         
-        // Handle avcC configuration frames
+        // avcC configuration frames DISABLED - client uses hardcoded config
         if header.frame_type == 0xFF {
-            info!("🔧 Received avcC config: {} bytes - broadcasting to smart clients", data.len());
-            
-            // Store avcC configuration
-            {
-                let mut stats = self.stats.write().await;
-                stats.avcc_config = Some(data.clone());
-            }
-            
-            // Create high-priority avcC frame
-            let avcc_frame = VideoFrame {
-                frame_number: 0,
-                timestamp: header.timestamp,
-                frame_type: 0xFF,
-                data: data.clone(),
-                priority: 0, // Highest priority
-                size: data.len(),
-            };
-            
-            // Broadcast to all clients (avcC always gets through)
-            match self.frame_sender.send(avcc_frame) {
-                Ok(count) => {
-                    info!("🔧 📤 Broadcasted avcC config to {} smart clients", count);
-                }
-                Err(_) => {
-                    info!("🔧 ⚠️ No smart clients connected for avcC");
-                }
-            }
-            
-            return Ok(());
+            info!("🔧 Ignoring avcC config: {} bytes (client uses hardcoded)", data.len());
+            return Ok(()); // Skip avcC frames entirely
         }
         
         // Update statistics
@@ -459,63 +433,145 @@ impl MOQInspiredVideoRelayServer {
             size: data.len(),
         };
 
-        // Check global backpressure before broadcasting
-        let should_broadcast = self.evaluate_global_backpressure(&video_frame).await;
-        
-        if should_broadcast {
-            // Broadcast to smart clients with intelligent delivery
+        // SIMPLIFIED: Just broadcast all frames - let MOQ handle backpressure like in samples
         match self.frame_sender.send(video_frame) {
-            Ok(count) => {
-                    // Frame successfully queued for smart delivery
+            Ok(_count) => {
+                // Frame successfully sent to all subscribers (including MOQ)
             }
             Err(_) => {
-                    // No clients - that's fine
-                }
+                // No subscribers - that's fine
             }
-        } else {
-            // Global backpressure kicked in - intelligently drop this frame
-            // Reduced logging to prevent flood
-            if header.frame_number % 100 == 0 {  // Log only every 100th dropped frame
-                let frame_type = if header.frame_type == 0x01 { "KEYFRAME" } else { "delta" };
-                info!("🎯 Smart backpressure: dropped {} frame #{} (size: {}) [logging every 100th]", 
-                      frame_type, header.frame_number, data.len());
-            }
-            
-            let mut stats = self.stats.write().await;
-            // Frame processed
         }
 
         Ok(())
     }
 
-    // Accept all frames if we have clients
-    async fn evaluate_global_backpressure(&self, _frame: &VideoFrame) -> bool {
-        let clients = self.smart_clients.read().await;
-        !clients.is_empty()
-    }
+    // REMOVED: Custom backpressure logic - following official MOQ samples
+    // The official samples don't have custom backpressure, MOQ handles this internally
 
     async fn start_real_moq_server(&self) -> Result<()> {
-        info!("🚀 Starting real MOQ server using moq_lite pattern...");
+        info!("🚀 Starting MOQ server using official kixelated/moq pattern...");
         
-        // Create MOQ broadcast - this is the correct pattern!
-        let broadcast = moq_lite::Broadcast::produce();
+        // Create MOQ server config exactly like moq-relay
+        let mut server_config = moq_native::ServerConfig::default();
+        server_config.listen = Some("[::]:4433".parse().unwrap());
+        server_config.tls.cert = vec!["server-cert-wt.pem".into()];
+        server_config.tls.key = vec!["server-key-wt.pem".into()];
         
-        // Create MOQ server with proper configuration
-        let server_config = moq_native::ServerConfig {
-            listen: Some("[::]:4433".parse().unwrap()),
-            ..Default::default()
-        };
-        let server = server_config.init()?;
+        // Initialize server exactly like moq-relay
+        let mut server = server_config.init()?;
+        let fingerprints = server.fingerprints().to_vec();
         
-        info!("🌐 MOQ server listening on: {:?}", server.local_addr());
+        info!("🌐 MOQ server listening on port 4433");
+        info!("🔒 Certificate fingerprints: {:?}", fingerprints);
         
-        // Start accepting connections and publishing frames in parallel
-        tokio::select! {
-            res = self.accept_moq_connections(server, "video_stream".to_string(), broadcast.consumer.clone()) => res?,
-            res = self.publish_moq_frames(broadcast.producer) => res?,
+        // Start HTTP server with certificate fingerprints (like moq-relay)
+        let fingerprints_for_http = fingerprints.clone();
+        tokio::spawn(async move {
+            start_http_server(fingerprints_for_http).await;
+        });
+
+        // Accept connections exactly like moq-relay main.rs
+        let mut conn_id = 0;
+        
+        while let Some(request) = server.accept().await {
+            info!("✅ MOQ connection {} accepted", conn_id);
+            
+            let relay_server = self.clone();
+            tokio::spawn(async move {
+                if let Err(err) = relay_server.handle_moq_connection(conn_id, request).await {
+                    tracing::warn!(%err, "MOQ connection {} closed", conn_id);
+                }
+            });
+            
+            conn_id += 1;
         }
         
         Ok(())
+    }
+
+    async fn handle_moq_connection(&self, conn_id: u64, request: moq_native::Request) -> Result<()> {
+        info!("🔗 Handling MOQ connection {} with OFFICIAL CATALOG APPROACH", conn_id);
+        
+        // Accept the WebTransport connection first
+        let connection = request.ok().await?;
+        info!("✅ WebTransport connection {} accepted", conn_id);
+        
+        // Create broadcast for this connection
+        let mut broadcast = moq_lite::Broadcast::produce();
+        
+        // Create catalog describing our H.264 video track
+        let mut catalog = Catalog::default();
+        
+        // Add H.264 video track to catalog (following official samples)
+        let video_track = Video {
+            track: moq_lite::Track {
+                name: "video".to_string(),
+                priority: 1,
+            },
+            config: VideoConfig {
+                codec: hang::catalog::VideoCodec::Unknown("avc1.64001f".to_string()), // H.264 High Profile Level 3.1
+                coded_width: Some(1670),
+                coded_height: Some(1080),
+                framerate: Some(30.0),
+                bitrate: Some(4_000_000), // 4 Mbps
+                optimize_for_latency: Some(true),
+                description: None,
+                display_ratio_width: None,
+                display_ratio_height: None,
+                rotation: None,
+                flip: None,
+            },
+        };
+        catalog.video.push(video_track);
+        
+        info!("📋 Created catalog with H.264 video track: {}x{} @ {}fps", 1670, 1080, 30.0);
+        
+        // Create origin and publish the broadcast
+        let origin = moq_lite::Origin::produce();
+        origin.producer.publish_broadcast("", broadcast.consumer);
+        
+        // Create catalog track and publish it to the broadcast
+        let catalog_track = moq_lite::Track {
+            name: "catalog.json".to_string(),
+            priority: 100, // High priority for catalog
+        };
+        let mut catalog_producer = broadcast.producer.create_track(catalog_track);
+        
+        // Publish catalog immediately
+        let mut catalog_group = catalog_producer.append_group();
+        let catalog_json = catalog.to_string()?;
+        catalog_group.write_frame(catalog_json);
+        catalog_group.close();
+        
+        info!("📋 Published catalog.json describing video track");
+        
+        // Create video track producer
+        let video_track = moq_lite::Track {
+            name: "video".to_string(),
+            priority: 1,
+        };
+        let video_producer = broadcast.producer.create_track(video_track);
+        
+        info!("🎬 Created video track producer");
+        
+        // Start publishing video frames to the video track
+        let publisher = self.clone();
+        tokio::spawn(async move {
+            if let Err(err) = publisher.publish_hang_video_frames(video_producer).await {
+                error!("❌ Failed to publish video frames for connection {}: {}", conn_id, err);
+            }
+        });
+        
+        // Establish MOQ session (this will handle client subscriptions to catalog and video)
+        // Pass origin.producer as publish handler to allow proper session establishment
+        let session = moq_lite::Session::accept(connection, Some(origin.consumer), Some(origin.producer)).await?;
+        info!("✅ MOQ session {} established with catalog - clients can now subscribe!", conn_id);
+        
+        // Wait for session to close
+        let session_error = session.closed().await;
+        info!("🔌 MOQ session {} closed: {:?}", conn_id, session_error);
+        Err(anyhow::anyhow!("MOQ session closed: {:?}", session_error))
     }
 
     async fn accept_moq_connections(
@@ -552,38 +608,168 @@ impl MOQInspiredVideoRelayServer {
         // Accept the session (WebTransport or QUIC)
         let session = session.ok().await?;
         
-        // Create an origin to publish the broadcast
+        // FIXED: Follow official kixelated/moq-relay pattern exactly
+        // Create an Origin and use its consumer (OriginConsumer) for the subscribe parameter
         let origin = moq_lite::Origin::produce();
-        origin.producer.publish_broadcast(&broadcast_name, consumer);
+        origin.producer.publish_broadcast("", consumer);
         
-        // Establish the MOQ session
-        let session = moq_lite::Session::accept(session, origin.consumer, None).await?;
+        // Pass origin.consumer (OriginConsumer) as subscribe parameter
+        let session = moq_lite::Session::accept(session, Some(origin.consumer), None).await?;
         
-        info!("✅ MOQ session {} accepted", id);
+        info!("✅ MOQ session {} accepted - following official pattern", id);
         
         // Wait for session to close
         Err(session.closed().await.into())
     }
     
-    async fn publish_moq_frames(&self, _producer: moq_lite::BroadcastProducer) -> Result<()> {
-        info!("📡 Starting MOQ frame publishing");
+    async fn publish_moq_frames(&self, mut producer: moq_lite::BroadcastProducer) -> Result<()> {
+        info!("📡 Starting MOQ video frame publishing with hang format - VERSION 2.1");
         
-        // Subscribe to video frames from QUIC input
+        // Create video track following the official kixelated/moq pattern
+        let video_track = moq_lite::Track {
+            name: "video".to_string(),
+            priority: 1, // Video typically has lower priority than audio
+        };
+        
+        // Create the track producer using hang::TrackProducer pattern
+        let track = producer.create_track(video_track);
+        let mut track_producer: hang::TrackProducer = track.into();
+        
+        info!("✅ Created MOQ video track: 'video' with priority 1");
+        
+        // Subscribe to video frames exactly like the official sample
         let mut frame_receiver = self.frame_sender.subscribe();
         
+        let mut published_count = 0;
         while let Ok(video_frame) = frame_receiver.recv().await {
-            // TODO: Convert H.264 frames to proper MOQ format
-            // For now, just log that we're publishing frames
-            if video_frame.frame_number % 30 == 0 {  // Log every 30th frame
-                info!("📦 Publishing MOQ frame #{}: {} bytes", 
-                      video_frame.frame_number, video_frame.data.len());
-            }
+            // Convert our VideoFrame to hang::Frame format
+            let hang_frame = self.convert_to_hang_frame(&video_frame)?;
             
-            // The actual frame publishing would happen here using the producer
-            // This requires converting H.264 frames to CMAF or other MOQ-compatible format
+            // Write the frame to the MOQ track (let MOQ handle its own backpressure)
+            track_producer.write(hang_frame);
+            published_count += 1;
+            
+            if published_count % 30 == 0 {  // Log every 30th published frame
+                let frame_type = if video_frame.frame_type == 0x01 { "KEYFRAME" } else { "delta" };
+                info!("📦 Published MOQ {} #{}: {} bytes (total published: {})", 
+                      frame_type, video_frame.frame_number, video_frame.data.len(), published_count);
+            }
         }
         
         Ok(())
+    }
+    
+    // NEW: Official catalog-based video frame publishing
+    async fn publish_hang_video_frames(&self, mut video_producer: moq_lite::TrackProducer) -> Result<()> {
+        info!("🎬 Starting OFFICIAL CATALOG video frame publishing - VERSION 2.11");
+        
+        // Subscribe to video frames from macOS app
+        let mut frame_receiver = self.frame_sender.subscribe();
+        
+        let mut published_count = 0;
+        let mut avcc_sent = false; // Track if we've sent avcC to this client
+        
+        while let Ok(video_frame) = frame_receiver.recv().await {
+        // avcC configuration sending DISABLED - client uses hardcoded config
+        // if !avcc_sent {
+        //     let stats = self.stats.read().await;
+        //     if let Some(avcc_data) = &stats.avcc_config {
+        //         info!("🔧 Sending avcC config to NEW MOQ client: {} bytes", avcc_data.len());
+        //         
+        //         // Create avcC frame
+        //         let avcc_frame = VideoFrame {
+        //             frame_number: 0,
+        //             timestamp: 0,
+        //             frame_type: 0xFF,
+        //             data: avcc_data.clone(),
+        //             priority: 0,
+        //             size: avcc_data.len(),
+        //         };
+        //         
+        //         // Convert and publish avcC frame
+        //         let avcc_hang_frame = self.convert_to_hang_frame(&avcc_frame)?;
+        //         let mut avcc_group = video_producer.append_group();
+        //         avcc_group.write_frame(avcc_hang_frame.payload);
+        //         avcc_group.close();
+        //         
+        //         avcc_sent = true; // Mark as sent for this client
+        //         info!("✅ Published avcC config to NEW MOQ client");
+        //     }
+        // }
+            
+            // Convert our VideoFrame to hang::Frame format
+            let hang_frame = self.convert_to_hang_frame(&video_frame)?;
+            
+            // Create a new group for this frame
+            let mut group = video_producer.append_group();
+            
+            // Write the raw frame data (annexb format for H.264)
+            group.write_frame(hang_frame.payload);
+            group.close();
+            
+            published_count += 1;
+            
+            // Log every 30th frame to avoid spam
+            if published_count % 30 == 0 {
+                let frame_type = if video_frame.frame_type == 0x01 { "KEYFRAME" } else { "delta" };
+                info!("🎬 Published catalog video {} #{}: {} bytes (total: {})", 
+                      frame_type, video_frame.frame_number, video_frame.data.len(), published_count);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn convert_to_hang_frame(&self, video_frame: &VideoFrame) -> Result<hang::Frame> {
+        // avcC configuration frames DISABLED - skip conversion
+        if video_frame.frame_type == 0xFF {
+            return Err(anyhow::anyhow!("avcC frames disabled"));
+        }
+        
+        // Convert H.264 AVCC format (from macOS) to annexb format (for MOQ/hang)
+        let annexb_data = self.avcc_to_annexb(&video_frame.data)?;
+        
+        // Create hang::Frame following the official pattern
+        let hang_frame = hang::Frame {
+            keyframe: video_frame.frame_type == 0x01, // 0x01 = keyframe, 0x00 = delta
+            timestamp: std::time::Duration::from_micros(video_frame.timestamp),
+            payload: moq_lite::coding::Bytes::from(annexb_data),
+        };
+        
+        Ok(hang_frame)
+    }
+    
+    fn avcc_to_annexb(&self, avcc_data: &[u8]) -> Result<Vec<u8>> {
+        // Convert H.264 AVCC format (length-prefixed) to annexb format (start code prefixed)
+        // AVCC: [length][NAL] [length][NAL] ...
+        // annexb: [0x00 0x00 0x00 0x01][NAL] [0x00 0x00 0x00 0x01][NAL] ...
+        
+        let mut annexb_data = Vec::new();
+        let mut cursor = 0;
+        
+        while cursor + 4 <= avcc_data.len() {
+            // Read NAL length (big-endian 4 bytes)
+            let nal_length = u32::from_be_bytes([
+                avcc_data[cursor],
+                avcc_data[cursor + 1], 
+                avcc_data[cursor + 2],
+                avcc_data[cursor + 3]
+            ]) as usize;
+            cursor += 4;
+            
+            if cursor + nal_length > avcc_data.len() {
+                return Err(anyhow::anyhow!("Invalid NAL length in AVCC data"));
+            }
+            
+            // Add annexb start code: 0x00 0x00 0x00 0x01
+            annexb_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+            
+            // Add NAL unit data
+            annexb_data.extend_from_slice(&avcc_data[cursor..cursor + nal_length]);
+            cursor += nal_length;
+        }
+        
+        Ok(annexb_data)
     }
 
     // Remove all old WebTransport session handling - replaced with MOQ
@@ -938,7 +1124,7 @@ fn generate_self_signed_cert_and_key() -> Result<(rustls::Certificate, rustls::P
     Ok((rustls::Certificate(cert_der), rustls::PrivateKey(key_der)))
 }
 
-async fn start_http_server() {
+async fn start_http_server(fingerprints: Vec<String>) {
     use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -954,14 +1140,32 @@ async fn start_http_server() {
 
     info!("🌐 ✅ HTTP server listening on: 0.0.0.0:3000");
 
+    // Get the first certificate fingerprint (like MOQ examples)
+    let fingerprint = fingerprints.first().cloned().unwrap_or_else(|| "no-fingerprint".to_string());
+
     while let Ok((mut stream, _addr)) = listener.accept().await {
+        let fingerprint = fingerprint.clone();
         tokio::spawn(async move {
             let mut buffer = [0; 1024];
             
             if let Ok(n) = stream.read(&mut buffer).await {
                 let request = String::from_utf8_lossy(&buffer[..n]);
                 
-                if request.contains("GET / ") {
+                if request.contains("GET /certificate.sha256") {
+                    // Serve certificate fingerprint (like MOQ examples)
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/plain\r\n\
+                         Content-Length: {}\r\n\
+                         Access-Control-Allow-Origin: *\r\n\
+                         \r\n\
+                         {}",
+                        fingerprint.len(),
+                        fingerprint
+                    );
+                    
+                    let _ = stream.write_all(response.as_bytes()).await;
+                } else if request.contains("GET / ") {
                     let html = include_str!("../web/index.html");
                     let response = format!(
                         "HTTP/1.1 200 OK\r\n\
@@ -975,6 +1179,50 @@ async fn start_http_server() {
                     );
                     
                     let _ = stream.write_all(response.as_bytes()).await;
+                } else if request.contains("GET /assets/") {
+                    // Extract the file path from the request
+                    if let Some(start) = request.find("GET /assets/") {
+                        if let Some(end) = request[start..].find(" HTTP/") {
+                            let file_path = &request[start + 4..start + end]; // Skip "GET "
+                            let full_path = format!("web{}", file_path);
+                            
+                            // Try to read the file
+                            match tokio::fs::read(&full_path).await {
+                                Ok(content) => {
+                                    let content_type = if file_path.ends_with(".js") {
+                                        "application/javascript"
+                                    } else if file_path.ends_with(".js.map") {
+                                        "application/json"
+                                    } else {
+                                        "application/octet-stream"
+                                    };
+                                    
+                                    let response = format!(
+                                        "HTTP/1.1 200 OK\r\n\
+                                         Content-Type: {}\r\n\
+                                         Content-Length: {}\r\n\
+                                         Access-Control-Allow-Origin: *\r\n\
+                                         \r\n",
+                                        content_type,
+                                        content.len()
+                                    );
+                                    
+                                    let _ = stream.write_all(response.as_bytes()).await;
+                                    let _ = stream.write_all(&content).await;
+                                }
+                                Err(_) => {
+                                    let response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                                    let _ = stream.write_all(response.as_bytes()).await;
+                                }
+                    }
+                } else {
+                            let response = "HTTP/1.1 400 Bad Request\r\n\r\n";
+                            let _ = stream.write_all(response.as_bytes()).await;
+                        }
+                    } else {
+                        let response = "HTTP/1.1 400 Bad Request\r\n\r\n";
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    }
                 } else {
                     let response = "HTTP/1.1 404 Not Found\r\n\r\n";
                     let _ = stream.write_all(response.as_bytes()).await;
